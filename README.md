@@ -22,11 +22,10 @@ pip install -r requirements.txt
 
 ```bash
 uv run python perf_sxs.py \
-    "https://perf.compare/compare-results?baseRev=BASE&newRev=NEW&..." \
-    --serve
+    "https://perf.compare/compare-results?baseRev=BASE&newRev=NEW&..."
 ```
 
-This is the most convenient method since perfcompare URLs contain both revisions in a single link.
+This is the most convenient method since perfcompare URLs contain both revisions in a single link. The viewer will automatically launch when downloads complete.
 
 ### Using two separate revisions
 
@@ -46,6 +45,15 @@ uv run python perf_sxs.py \
     --output ./videos
 ```
 
+### Download without launching viewer
+
+```bash
+uv run python perf_sxs.py <perfcompare-url> --no-serve
+
+# View later
+uv run python viewer.py ./sxs_videos
+```
+
 ### Filter by platform and test
 
 ```bash
@@ -55,16 +63,10 @@ uv run python perf_sxs.py <base-url> <new-url> \
     --max-downloads 20
 ```
 
-### Auto-launch viewer
-
-```bash
-uv run python perf_sxs.py <base-url> <new-url> --serve
-```
-
 ### View previously downloaded videos
 
 ```bash
-uv run python viewer.py ./videos --port 5000
+uv run python viewer.py ./videos
 ```
 
 ## Options
@@ -75,16 +77,15 @@ uv run python viewer.py ./videos --port 5000
 | `--tests`, `-t` | Comma-separated test name filters (e.g., `amazon,cnn`) | All tests |
 | `--output`, `-o` | Output directory | `./sxs_videos` |
 | `--max-downloads`, `-m` | Concurrent downloads | 10 |
-| `--serve` | Auto-start viewer after download | false |
-| `--port` | Viewer port | 5000 |
+| `--no-serve` | Skip auto-launching viewer after download | false |
+| `--port` | Viewer port | 3333 |
 
 ## Examples
 
 ### Quick start with perfcompare URL
 ```bash
 uv run python perf_sxs.py \
-    "https://perf.compare/compare-results?baseRev=881d2bbf...&newRev=56290454..." \
-    --serve
+    "https://perf.compare/compare-results?baseRev=881d2bbf...&newRev=56290454..."
 ```
 
 ### Download all Linux tp6 tests
@@ -96,8 +97,7 @@ uv run python perf_sxs.py <perfcompare-url> --platforms linux --tests tp6
 ```bash
 uv run python perf_sxs.py <base-rev> <new-rev> \
     --tests amazon \
-    --max-downloads 30 \
-    --serve
+    --max-downloads 30
 ```
 
 ## How It Works

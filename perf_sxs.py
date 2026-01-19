@@ -8,8 +8,7 @@ Usage:
 
 Example with perfcompare URL (recommended):
     python perf_sxs.py \
-        "https://perf.compare/compare-results?baseRev=881d2bbf...&newRev=56290454..." \
-        --serve
+        "https://perf.compare/compare-results?baseRev=881d2bbf...&newRev=56290454..."
 
 Example with revisions:
     python perf_sxs.py \
@@ -394,15 +393,15 @@ Examples:
         default=MAX_CONCURRENT_DOWNLOADS
     )
     parser.add_argument(
-        "--serve",
-        help="Start Flask server after download",
+        "--no-serve",
+        help="Don't start Flask server after download",
         action="store_true"
     )
     parser.add_argument(
         "--port",
-        help="Port for Flask server",
+        help="Port for Flask server (default: 3333)",
         type=int,
-        default=5000
+        default=3333
     )
 
     args = parser.parse_args()
@@ -531,13 +530,13 @@ Examples:
     print(f"\nFound {len(comparisons)} test/platform combinations for comparison")
     print(f"Metadata saved to: {meta_path}")
 
-    if args.serve:
+    if not args.no_serve:
         print(f"\nStarting viewer at http://localhost:{args.port}")
         from viewer import create_app
         app = create_app(output_dir)
         app.run(host="0.0.0.0", port=args.port, debug=False)
     else:
-        print(f"\nTo view videos, run:")
+        print(f"\nTo view videos later, run:")
         print(f"  python viewer.py {output_dir}")
 
 

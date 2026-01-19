@@ -380,7 +380,7 @@ def main():
         default="./sxs_videos",
         help="Directory containing downloaded videos"
     )
-    parser.add_argument("--port", "-p", type=int, default=5000, help="Port to serve on")
+    parser.add_argument("--port", "-p", type=int, default=3333, help="Port to serve on")
     parser.add_argument("--host", "-H", default="0.0.0.0", help="Host to bind to")
 
     args = parser.parse_args()
