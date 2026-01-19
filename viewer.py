@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+Side-by-side video comparison viewer for browsertime tests.
+
+Usage:
+    python viewer.py [video_dir] [--port PORT]
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+from flask import Flask, render_template_string, send_file, jsonify
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perf Side-by-Side Viewer</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #0f3460;
+        }
+        header h1 { font-size: 1.5rem; font-weight: 500; }
+        .revision-info {
+            display: flex;
+            gap: 2rem;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+            color: #888;
+        }
+        .revision-info span { font-family: monospace; color: #e94560; }
+        .container {
+            display: flex;
+            min-height: calc(100vh - 80px);
+        }
+        .sidebar {
+            width: 300px;
+            background: #16213e;
+            border-right: 1px solid #0f3460;
+            overflow-y: auto;
+            padding: 1rem 0;
+        }
+        .sidebar h2 {
+            padding: 0.5rem 1rem;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            color: #666;
+            letter-spacing: 0.05em;
+        }
+        .test-item {
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        .test-item:hover { background: #1a1a2e; }
+        .test-item.active {
+            background: #1a1a2e;
+            border-left-color: #e94560;
+        }
+        .test-item .platform {
+            font-size: 0.75rem;
+            color: #666;
+            margin-bottom: 0.25rem;
+        }
+        .test-item .name {
+            font-size: 0.9rem;
+            word-break: break-word;
+        }
+        .main {
+            flex: 1;
+            padding: 2rem;
+            overflow-y: auto;
+        }
+        .comparison-view {
+            display: none;
+        }
+        .comparison-view.active {
+            display: block;
+        }
+        .video-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        .video-panel {
+            background: #16213e;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .video-panel h3 {
+            padding: 0.75rem 1rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+            border-bottom: 1px solid #0f3460;
+        }
+        .video-panel.base h3 { color: #4ecca3; }
+        .video-panel.new h3 { color: #e94560; }
+        .video-panel video {
+            width: 100%;
+            display: block;
+        }
+        .controls {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 1rem;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .controls button {
+            background: #0f3460;
+            border: none;
+            color: #eee;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+        .controls button:hover { background: #e94560; }
+        .controls button.active { background: #e94560; }
+        .controls label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+        }
+        .controls input[type="range"] {
+            width: 150px;
+        }
+        .video-select {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .video-select select {
+            background: #0f3460;
+            border: none;
+            color: #eee;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #666;
+        }
+        .empty-state h2 { margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Perf Side-by-Side Viewer</h1>
+        <div class="revision-info">
+            <div>Base: <span id="base-rev">{{ base_revision[:12] if base_revision else 'N/A' }}</span></div>
+            <div>New: <span id="new-rev">{{ new_revision[:12] if new_revision else 'N/A' }}</span></div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="sidebar">
+            <h2>Tests ({{ comparisons|length }})</h2>
+            {% for key, comp in comparisons.items() %}
+            <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
+                <div class="platform">{{ comp.platform }}</div>
+                <div class="name">{{ comp.test_name }}</div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="main">
+            {% if not comparisons %}
+            <div class="empty-state">
+                <h2>No comparisons available</h2>
+                <p>Download videos first using perf_sxs.py</p>
+            </div>
+            {% else %}
+            <div class="empty-state" id="placeholder">
+                <h2>Select a test from the sidebar</h2>
+            </div>
+
+            {% for key, comp in comparisons.items() %}
+            <div class="comparison-view" id="view-{{ key|replace('/', '-') }}">
+                <div class="controls">
+                    <button onclick="playBoth('{{ key }}')" id="play-btn-{{ key|replace('/', '-') }}">Play Both</button>
+                    <button onclick="pauseBoth('{{ key }}')">Pause</button>
+                    <button onclick="restartBoth('{{ key }}')">Restart</button>
+                    <label>
+                        Speed:
+                        <input type="range" min="0.25" max="2" step="0.25" value="1"
+                               onchange="setSpeed('{{ key }}', this.value)">
+                        <span id="speed-{{ key|replace('/', '-') }}">1x</span>
+                    </label>
+                    <label>
+                        <input type="checkbox" onchange="toggleSync('{{ key }}', this.checked)" checked>
+                        Sync playback
+                    </label>
+                    <div class="video-select">
+                        <label>Run:</label>
+                        <select onchange="selectRun('{{ key }}', this.value)">
+                            {% for i in range(comp.base_videos|length) %}
+                            <option value="{{ i }}">{{ i + 1 }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="video-container">
+                    <div class="video-panel base">
+                        <h3>Base ({{ base_revision[:12] if base_revision else 'N/A' }})</h3>
+                        <video id="base-{{ key|replace('/', '-') }}"
+                               src="/video/{{ comp.base_videos[0]|urlencode }}"
+                               muted></video>
+                    </div>
+                    <div class="video-panel new">
+                        <h3>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h3>
+                        <video id="new-{{ key|replace('/', '-') }}"
+                               src="/video/{{ comp.new_videos[0]|urlencode }}"
+                               muted></video>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        const comparisons = {{ comparisons_json|safe }};
+        let syncEnabled = {};
+        let currentTest = null;
+
+        function selectTest(key) {
+            const safeKey = key.replace('/', '-');
+
+            // Update sidebar
+            document.querySelectorAll('.test-item').forEach(el => el.classList.remove('active'));
+            document.querySelector(`.test-item[data-key="${key}"]`).classList.add('active');
+
+            // Update main view
+            document.getElementById('placeholder')?.classList.add('comparison-view');
+            document.querySelectorAll('.comparison-view').forEach(el => el.classList.remove('active'));
+            document.getElementById(`view-${safeKey}`).classList.add('active');
+
+            currentTest = key;
+        }
+
+        function playBoth(key) {
+            const safeKey = key.replace('/', '-');
+            const baseVideo = document.getElementById(`base-${safeKey}`);
+            const newVideo = document.getElementById(`new-${safeKey}`);
+
+            if (syncEnabled[key] !== false) {
+                // Sync start times
+                const startTime = Math.max(baseVideo.currentTime, newVideo.currentTime);
+                baseVideo.currentTime = startTime;
+                newVideo.currentTime = startTime;
+            }
+
+            baseVideo.play();
+            newVideo.play();
+        }
+
+        function pauseBoth(key) {
+            const safeKey = key.replace('/', '-');
+            document.getElementById(`base-${safeKey}`).pause();
+            document.getElementById(`new-${safeKey}`).pause();
+        }
+
+        function restartBoth(key) {
+            const safeKey = key.replace('/', '-');
+            const baseVideo = document.getElementById(`base-${safeKey}`);
+            const newVideo = document.getElementById(`new-${safeKey}`);
+
+            baseVideo.currentTime = 0;
+            newVideo.currentTime = 0;
+            baseVideo.play();
+            newVideo.play();
+        }
+
+        function setSpeed(key, speed) {
+            const safeKey = key.replace('/', '-');
+            document.getElementById(`base-${safeKey}`).playbackRate = speed;
+            document.getElementById(`new-${safeKey}`).playbackRate = speed;
+            document.getElementById(`speed-${safeKey}`).textContent = speed + 'x';
+        }
+
+        function toggleSync(key, enabled) {
+            syncEnabled[key] = enabled;
+        }
+
+        function selectRun(key, index) {
+            const safeKey = key.replace('/', '-');
+            const comp = comparisons[key];
+
+            if (comp.base_videos[index]) {
+                document.getElementById(`base-${safeKey}`).src = '/video/' + encodeURIComponent(comp.base_videos[index]);
+            }
+            if (comp.new_videos[index]) {
+                document.getElementById(`new-${safeKey}`).src = '/video/' + encodeURIComponent(comp.new_videos[index]);
+            }
+        }
+
+        // Select first test by default
+        const firstKey = Object.keys(comparisons)[0];
+        if (firstKey) {
+            selectTest(firstKey);
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+def create_app(video_dir: Path) -> Flask:
+    """Create and configure the Flask app."""
+    app = Flask(__name__)
+
+    video_dir = Path(video_dir)
+    meta_path = video_dir / "comparisons.json"
+
+    if meta_path.exists():
+        with open(meta_path) as f:
+            metadata = json.load(f)
+    else:
+        metadata = {
+            "base_revision": None,
+            "new_revision": None,
+            "comparisons": {}
+        }
+
+    @app.route("/")
+    def index():
+        return render_template_string(
+            HTML_TEMPLATE,
+            base_revision=metadata.get("base_revision"),
+            new_revision=metadata.get("new_revision"),
+            comparisons=metadata.get("comparisons", {}),
+            comparisons_json=json.dumps(metadata.get("comparisons", {}))
+        )
+
+    @app.route("/video/<path:video_path>")
+    def serve_video(video_path):
+        # video_path is relative to video_dir
+        full_path = Path(video_path)
+        if not full_path.exists():
+            # Try as relative
+            full_path = video_dir / video_path
+        if full_path.exists():
+            return send_file(full_path, mimetype="video/mp4")
+        return "Video not found", 404
+
+    @app.route("/api/comparisons")
+    def api_comparisons():
+        return jsonify(metadata)
+
+    return app
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Side-by-side video comparison viewer")
+    parser.add_argument(
+        "video_dir",
+        nargs="?",
+        default="./sxs_videos",
+        help="Directory containing downloaded videos"
+    )
+    parser.add_argument("--port", "-p", type=int, default=5000, help="Port to serve on")
+    parser.add_argument("--host", "-H", default="0.0.0.0", help="Host to bind to")
+
+    args = parser.parse_args()
+
+    video_dir = Path(args.video_dir)
+    if not video_dir.exists():
+        print(f"Error: Directory {video_dir} does not exist")
+        print("Run perf_sxs.py first to download videos")
+        return 1
+
+    app = create_app(video_dir)
+    print(f"Starting viewer at http://localhost:{args.port}")
+    print(f"Video directory: {video_dir.absolute()}")
+    app.run(host=args.host, port=args.port, debug=True)
+
+
+if __name__ == "__main__":
+    main()
