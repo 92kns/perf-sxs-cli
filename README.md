@@ -18,7 +18,26 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Download videos from two Try pushes
+### Using perfcompare URL (recommended)
+
+```bash
+uv run python perf_sxs.py \
+    "https://perf.compare/compare-results?baseRev=BASE&newRev=NEW&..." \
+    --serve
+```
+
+This is the most convenient method since perfcompare URLs contain both revisions in a single link.
+
+### Using two separate revisions
+
+```bash
+uv run python perf_sxs.py \
+    881d2bbfaf536748b4ebdbadeaaa2c9c269f91e8 \
+    56290454af1890c3344757213fc7199839fe3e7f \
+    --output ./videos
+```
+
+### Using Treeherder URLs
 
 ```bash
 uv run python perf_sxs.py \
@@ -61,14 +80,21 @@ uv run python viewer.py ./videos --port 5000
 
 ## Examples
 
+### Quick start with perfcompare URL
+```bash
+uv run python perf_sxs.py \
+    "https://perf.compare/compare-results?baseRev=881d2bbf...&newRev=56290454..." \
+    --serve
+```
+
 ### Download all Linux tp6 tests
 ```bash
-uv run python perf_sxs.py <base> <new> --platforms linux --tests tp6
+uv run python perf_sxs.py <perfcompare-url> --platforms linux --tests tp6
 ```
 
 ### Download specific test with high concurrency
 ```bash
-uv run python perf_sxs.py <base> <new> \
+uv run python perf_sxs.py <base-rev> <new-rev> \
     --tests amazon \
     --max-downloads 30 \
     --serve
@@ -76,7 +102,7 @@ uv run python perf_sxs.py <base> <new> \
 
 ## How It Works
 
-1. **Parse Try URLs** - Extracts revisions from Treeherder URLs
+1. **Parse Input** - Extracts revisions from perfcompare URLs, Treeherder URLs, or plain revision strings
 2. **Find Task Groups** - Queries TaskCluster index API
 3. **Filter Tasks** - Finds completed browsertime tests, deduplicates by test/platform
 4. **Download Videos** - Async downloads with `aiohttp` (configurable concurrency)

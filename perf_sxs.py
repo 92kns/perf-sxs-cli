@@ -3,20 +3,25 @@
 Async side-by-side video comparison tool for Mozilla Try pushes.
 
 Usage:
+    python perf_sxs.py <perfcompare-url> [options]
     python perf_sxs.py <base-revision> <new-revision> [options]
 
-Example with full URLs:
+Example with perfcompare URL (recommended):
     python perf_sxs.py \
-        "https://treeherder.mozilla.org/jobs?repo=try&revision=abc123" \
-        "https://treeherder.mozilla.org/jobs?repo=try&revision=def456" \
-        --platforms linux,windows \
-        --output ./videos
+        "https://perf.compare/compare-results?baseRev=881d2bbf...&newRev=56290454..." \
+        --serve
 
-Example with just revisions:
+Example with revisions:
     python perf_sxs.py \
         881d2bbfaf5390c3344757213fc7199839fe3e7f \
         56290454af1890c3344757213fc7199839fe3e7f \
-        --serve
+        --platforms linux,windows
+
+Example with Treeherder URLs:
+    python perf_sxs.py \
+        "https://treeherder.mozilla.org/jobs?repo=try&revision=abc123" \
+        "https://treeherder.mozilla.org/jobs?repo=try&revision=def456" \
+        --output ./videos
 """
 
 import argparse
@@ -54,6 +59,26 @@ class VideoTask:
     platform: str
     label: str  # "base" or "new"
     revision: str
+
+
+def parse_perfcompare_url(url: str) -> tuple[TryPush, TryPush]:
+    """Extract base and new revisions from a perfcompare URL."""
+    parsed = urlparse(url)
+
+    if "perf.compare" in parsed.netloc or "perfcompare" in parsed.netloc:
+        params = parse_qs(parsed.query)
+        base_rev = params.get("baseRev", [None])[0]
+        new_rev = params.get("newRev", [None])[0]
+        base_repo = params.get("baseRepo", ["try"])[0]
+        new_repo = params.get("newRepo", ["try"])[0]
+
+        if base_rev and new_rev:
+            return (
+                TryPush(revision=base_rev, repo=base_repo),
+                TryPush(revision=new_rev, repo=new_repo)
+            )
+
+    raise ValueError(f"Could not parse perfcompare URL: {url}")
 
 
 def parse_try_url(url: str) -> TryPush:
@@ -328,10 +353,25 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Download and compare browsertime videos from two Try pushes"
+        description="Download and compare browsertime videos from two Try pushes",
+        epilog="""
+Examples:
+  # Using perfcompare URL (recommended)
+  %(prog)s "https://perf.compare/compare-results?baseRev=...&newRev=..."
+
+  # Using two separate revisions
+  %(prog)s 881d2bbfaf53 56290454af18
+
+  # Using Treeherder URLs
+  %(prog)s "https://treeherder.mozilla.org/...&revision=abc" "https://treeherder.mozilla.org/...&revision=def"
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("base_url", help="Base Try push URL or revision")
-    parser.add_argument("new_url", help="New Try push URL or revision")
+    parser.add_argument(
+        "revisions",
+        nargs="+",
+        help="Perfcompare URL, or base and new revisions/URLs"
+    )
     parser.add_argument(
         "--platforms", "-p",
         help="Comma-separated platform filters (e.g., linux,windows)",
@@ -369,8 +409,21 @@ async def main():
 
     print("Parsing revisions...")
     try:
-        base_push = parse_try_url(args.base_url)
-        new_push = parse_try_url(args.new_url)
+        if len(args.revisions) == 1:
+            try:
+                base_push, new_push = parse_perfcompare_url(args.revisions[0])
+                print(f"  Parsed perfcompare URL")
+            except ValueError:
+                print(f"Error: Single argument must be a perfcompare URL")
+                print(f"  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
+                print(f"  Or provide two separate revisions/URLs")
+                sys.exit(1)
+        elif len(args.revisions) == 2:
+            base_push = parse_try_url(args.revisions[0])
+            new_push = parse_try_url(args.revisions[1])
+        else:
+            print(f"Error: Expected 1 perfcompare URL or 2 revisions, got {len(args.revisions)} arguments")
+            sys.exit(1)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
