@@ -379,14 +379,19 @@ def create_app(video_dir: Path) -> Flask:
 
     @app.route("/video/<path:video_path>")
     def serve_video(video_path):
-        # video_path is relative to video_dir
-        full_path = Path(video_path)
-        if not full_path.exists():
-            # Try as relative
-            full_path = video_dir / video_path
-        if full_path.exists():
-            return send_file(full_path, mimetype="video/mp4")
-        return "Video not found", 404
+        try:
+            # Resolve path relative to video_dir
+            full_path = (video_dir / video_path).resolve()
+
+            # Security: ensure resolved path is within video_dir
+            if not full_path.is_relative_to(video_dir.resolve()):
+                return "Access denied", 403
+
+            if full_path.exists() and full_path.is_file():
+                return send_file(full_path, mimetype="video/mp4")
+            return "Video not found", 404
+        except (ValueError, OSError):
+            return "Invalid path", 400
 
     @app.route("/api/comparisons")
     def api_comparisons():

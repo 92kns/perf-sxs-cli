@@ -207,8 +207,8 @@ class TestVideoPathSecurity:
 
         for path in malicious_paths:
             response = client.get(f"/video/{path}")
-            # Should either return 404 or 400, not serve the file
-            assert response.status_code in [404, 400]
+            # Should return 403 (forbidden), 404 (not found), or 400 (bad request)
+            assert response.status_code in [403, 404, 400]
 
 
 # Pytest markers
