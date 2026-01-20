@@ -25,19 +25,17 @@ Example with Treeherder URLs:
 
 import argparse
 import asyncio
-import aiohttp
 import json
-import os
 import re
 import sys
 import tarfile
-import tempfile
 import threading
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
+
+import aiohttp
 
 TASKCLUSTER_ROOT = "https://firefox-ci-tc.services.mozilla.com/api"
 TASKCLUSTER_QUEUE = f"{TASKCLUSTER_ROOT}/queue/v1"
@@ -50,7 +48,7 @@ MAX_CONCURRENT_DOWNLOADS = 10
 class TryPush:
     revision: str
     repo: str = "try"
-    task_group_id: Optional[str] = None
+    task_group_id: str | None = None
 
 
 @dataclass
@@ -76,7 +74,7 @@ def parse_perfcompare_url(url: str) -> tuple[TryPush, TryPush]:
         if base_rev and new_rev:
             return (
                 TryPush(revision=base_rev, repo=base_repo),
-                TryPush(revision=new_rev, repo=new_repo)
+                TryPush(revision=new_rev, repo=new_repo),
             )
 
     raise ValueError(f"Could not parse perfcompare URL: {url}")
@@ -121,7 +119,7 @@ def load_high_confidence_from_file(json_path: Path) -> set[tuple[str, str]]:
     high_conf_tests = set()
 
     for item in data:
-        for test_name, test_data in item.items():
+        for _test_name, test_data in item.items():
             for result in test_data:
                 if result.get("confidence_text") == "High":
                     suite = result.get("suite")
@@ -132,7 +130,9 @@ def load_high_confidence_from_file(json_path: Path) -> set[tuple[str, str]]:
     return high_conf_tests
 
 
-async def fetch_perfcompare_data_from_treeherder(session: aiohttp.ClientSession, perfcompare_url: str) -> set[tuple[str, str]]:
+async def fetch_perfcompare_data_from_treeherder(
+    session: aiohttp.ClientSession, perfcompare_url: str
+) -> set[tuple[str, str]]:
     """
     Fetch performance comparison data from Treeherder API and extract high confidence tests.
 
@@ -159,14 +159,14 @@ async def fetch_perfcompare_data_from_treeherder(session: aiohttp.ClientSession,
         "framework": framework,
         "no_subtests": "true",
         "replicates": replicates,
-        "test_version": test_version
+        "test_version": test_version,
     }
 
     query_string = "&".join(f"{k}={v}" for k, v in api_params.items())
     full_url = f"{api_url}?{query_string}"
 
     try:
-        print(f"  Calling Treeherder API...")
+        print("  Calling Treeherder API...")
         async with session.get(full_url) as resp:
             if resp.status != 200:
                 print(f"  Error: Treeherder API returned status {resp.status}")
@@ -175,7 +175,7 @@ async def fetch_perfcompare_data_from_treeherder(session: aiohttp.ClientSession,
             results = await resp.json()
 
             if not isinstance(results, list):
-                print(f"  Error: Unexpected API response format")
+                print("  Error: Unexpected API response format")
                 return set()
 
             high_conf_tests = set()
@@ -191,10 +191,8 @@ async def fetch_perfcompare_data_from_treeherder(session: aiohttp.ClientSession,
 
     except Exception as e:
         print(f"  Error fetching from Treeherder API: {e}")
-        print(f"  Fallback: Use --confidence-json with manually downloaded JSON")
+        print("  Fallback: Use --confidence-json with manually downloaded JSON")
         return set()
-
-
 
 
 async def find_task_group_id(session: aiohttp.ClientSession, revision: str, repo: str) -> str:
@@ -265,8 +263,14 @@ def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
         after_firefox = suite_parts[1]
 
         known_suffixes = [
-            "-e10s", "-fission", "-live", "-cold", "-warm",
-            "-webrender", "-bytecode-cached", "-nofis"
+            "-e10s",
+            "-fission",
+            "-live",
+            "-cold",
+            "-warm",
+            "-webrender",
+            "-bytecode-cached",
+            "-nofis",
         ]
 
         suite = after_firefox
@@ -282,7 +286,7 @@ def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
 def filter_browsertime_video_tasks(
     tasks: list,
     platforms: list[str] | None = None,
-    high_conf_tests: set[tuple[str, str]] | None = None
+    high_conf_tests: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """
     Filter tasks to only browsertime tests with video artifacts. Deduplicates by test/platform.
@@ -341,7 +345,7 @@ async def download_artifact(
     artifact_name: str,
     output_path: Path,
     semaphore: asyncio.Semaphore,
-    progress_callback=None
+    progress_callback=None,
 ) -> bool:
     """Download a single artifact."""
     async with semaphore:
@@ -371,11 +375,11 @@ async def download_video_artifacts(
     session: aiohttp.ClientSession,
     video_tasks: list[VideoTask],
     output_dir: Path,
-    max_concurrent: int = 10
+    max_concurrent: int = 10,
 ) -> dict[str, list[Path]]:
     """Download video artifacts for all tasks."""
     semaphore = asyncio.Semaphore(max_concurrent)
-    results = {"base": [], "new": []}
+    results: dict[str, list[Path]] = {"base": [], "new": []}
 
     total = len(video_tasks)
     completed = 0
@@ -434,10 +438,10 @@ async def download_video_artifacts(
 
     print()  # Newline after progress
 
-    for vt, result in zip(video_tasks, all_results):
+    for vt, result in zip(video_tasks, all_results, strict=False):
         if isinstance(result, Exception):
             print(f"    Failed: {vt.test_name} - {result}")
-        elif result:
+        elif isinstance(result, list):
             results[vt.label].extend(result)
 
     return results
@@ -445,7 +449,7 @@ async def download_video_artifacts(
 
 def organize_videos_for_comparison(output_dir: Path) -> dict:
     """Organize downloaded videos into a structure for the viewer."""
-    comparisons = {}
+    comparisons: dict[str, dict] = {}
 
     base_dir = output_dir / "base"
     new_dir = output_dir / "new"
@@ -499,54 +503,48 @@ Examples:
   # Using Treeherder URLs
   %(prog)s "https://treeherder.mozilla.org/...&revision=abc" "https://treeherder.mozilla.org/...&revision=def"
         """,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "revisions",
-        nargs="+",
-        help="Perfcompare URL, or base and new revisions/URLs"
+        "revisions", nargs="+", help="Perfcompare URL, or base and new revisions/URLs"
     )
     parser.add_argument(
-        "--platforms", "-p",
+        "--platforms",
+        "-p",
         help="Comma-separated platform filters (e.g., linux,windows)",
-        default=None
+        default=None,
     )
     parser.add_argument(
-        "--tests", "-t",
+        "--tests",
+        "-t",
         help="Comma-separated test name filters (e.g., amazon,google)",
-        default=None
+        default=None,
     )
     parser.add_argument(
-        "--output", "-o",
-        help="Output directory for videos",
-        default="./sxs_videos"
+        "--output", "-o", help="Output directory for videos", default="./sxs_videos"
     )
     parser.add_argument(
-        "--max-downloads", "-m",
+        "--max-downloads",
+        "-m",
         help="Maximum concurrent downloads",
         type=int,
-        default=MAX_CONCURRENT_DOWNLOADS
+        default=MAX_CONCURRENT_DOWNLOADS,
     )
     parser.add_argument(
-        "--no-serve",
-        help="Don't start Flask server after download",
-        action="store_true"
+        "--no-serve", help="Don't start Flask server after download", action="store_true"
     )
     parser.add_argument(
         "--all-tests",
         help="Download all tests (ignore High confidence filter from perfcompare)",
-        action="store_true"
+        action="store_true",
     )
     parser.add_argument(
         "--confidence-json",
         help="Path to local perfcompare JSON file for confidence filtering",
-        default=None
+        default=None,
     )
     parser.add_argument(
-        "--port",
-        help="Port for Flask server (default: 3333)",
-        type=int,
-        default=3333
+        "--port", help="Port for Flask server (default: 3333)", type=int, default=3333
     )
 
     args = parser.parse_args()
@@ -558,17 +556,19 @@ Examples:
             try:
                 base_push, new_push = parse_perfcompare_url(args.revisions[0])
                 perfcompare_url = args.revisions[0]
-                print(f"  Parsed perfcompare URL")
+                print("  Parsed perfcompare URL")
             except ValueError:
-                print(f"Error: Single argument must be a perfcompare URL")
-                print(f"  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
-                print(f"  Or provide two separate revisions/URLs")
+                print("Error: Single argument must be a perfcompare URL")
+                print("  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
+                print("  Or provide two separate revisions/URLs")
                 sys.exit(1)
         elif len(args.revisions) == 2:
             base_push = parse_try_url(args.revisions[0])
             new_push = parse_try_url(args.revisions[1])
         else:
-            print(f"Error: Expected 1 perfcompare URL or 2 revisions, got {len(args.revisions)} arguments")
+            print(
+                f"Error: Expected 1 perfcompare URL or 2 revisions, got {len(args.revisions)} arguments"
+            )
             sys.exit(1)
     except ValueError as e:
         print(f"Error: {e}")
@@ -592,9 +592,7 @@ Examples:
         base_push.task_group_id = await find_task_group_id(
             session, base_push.revision, base_push.repo
         )
-        new_push.task_group_id = await find_task_group_id(
-            session, new_push.revision, new_push.repo
-        )
+        new_push.task_group_id = await find_task_group_id(session, new_push.revision, new_push.repo)
         print(f"  Base task group: {base_push.task_group_id}")
         print(f"  New task group:  {new_push.task_group_id}")
 
@@ -602,7 +600,7 @@ Examples:
         print("\nFetching task lists...")
         base_tasks, new_tasks = await asyncio.gather(
             get_tasks_in_group(session, base_push.task_group_id),
-            get_tasks_in_group(session, new_push.task_group_id)
+            get_tasks_in_group(session, new_push.task_group_id),
         )
         print(f"  Base: {len(base_tasks)} total tasks")
         print(f"  New:  {len(new_tasks)} total tasks")
@@ -614,8 +612,8 @@ Examples:
             if json_path.exists():
                 high_conf_tests = load_high_confidence_from_file(json_path)
                 print(f"  Found {len(high_conf_tests)} high confidence test/platform combinations")
-                print(f"  Unique suites: {sorted(set(s for s, p in high_conf_tests))}")
-                print(f"  Will only download videos for high confidence changes")
+                print(f"  Unique suites: {sorted({s for s, p in high_conf_tests})}")
+                print("  Will only download videos for high confidence changes")
             else:
                 print(f"  Error: File not found: {args.confidence_json}")
         elif perfcompare_url and not args.all_tests:
@@ -623,10 +621,10 @@ Examples:
             high_conf_tests = await fetch_perfcompare_data_from_treeherder(session, perfcompare_url)
             if high_conf_tests:
                 print(f"  Found {len(high_conf_tests)} high confidence test/platform combinations")
-                print(f"  Unique suites: {sorted(set(s for s, p in high_conf_tests))}")
-                print(f"  Will only download videos for high confidence changes")
+                print(f"  Unique suites: {sorted({s for s, p in high_conf_tests})}")
+                print("  Will only download videos for high confidence changes")
             else:
-                print(f"  No high confidence filter applied (API fetch may have failed)")
+                print("  No high confidence filter applied (API fetch may have failed)")
         elif args.all_tests:
             print("\n--all-tests flag set: downloading all tests (ignoring confidence filter)")
 
@@ -636,23 +634,25 @@ Examples:
         new_bt = filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests)
 
         if high_conf_tests:
-            print(f"\n  Debug: Showing first 5 tasks that passed filtering:")
+            print("\n  Debug: Showing first 5 tasks that passed filtering:")
             for i, task in enumerate(base_bt[:5]):
                 task_name = task["task"]["metadata"]["name"]
                 suite, platform = extract_suite_and_platform(task_name)
-                print(f"    {i+1}. {task_name}")
+                print(f"    {i + 1}. {task_name}")
                 print(f"       -> ({suite}, {platform})")
 
         # Apply test name filters
         if test_filters:
-            base_bt = [t for t in base_bt if any(
-                f.lower() in t["task"]["metadata"]["name"].lower()
-                for f in test_filters
-            )]
-            new_bt = [t for t in new_bt if any(
-                f.lower() in t["task"]["metadata"]["name"].lower()
-                for f in test_filters
-            )]
+            base_bt = [
+                t
+                for t in base_bt
+                if any(f.lower() in t["task"]["metadata"]["name"].lower() for f in test_filters)
+            ]
+            new_bt = [
+                t
+                for t in new_bt
+                if any(f.lower() in t["task"]["metadata"]["name"].lower() for f in test_filters)
+            ]
 
         print(f"  Base: {len(base_bt)} browsertime tasks")
         print(f"  New:  {len(new_bt)} browsertime tasks")
@@ -667,29 +667,33 @@ Examples:
         for task in base_bt:
             task_name = task["task"]["metadata"]["name"]
             test_name, platform = extract_test_info(task_name)
-            video_tasks.append(VideoTask(
-                task_id=task["status"]["taskId"],
-                test_name=test_name,
-                platform=platform,
-                label="base",
-                revision=base_push.revision
-            ))
+            video_tasks.append(
+                VideoTask(
+                    task_id=task["status"]["taskId"],
+                    test_name=test_name,
+                    platform=platform,
+                    label="base",
+                    revision=base_push.revision,
+                )
+            )
 
         for task in new_bt:
             task_name = task["task"]["metadata"]["name"]
             test_name, platform = extract_test_info(task_name)
-            video_tasks.append(VideoTask(
-                task_id=task["status"]["taskId"],
-                test_name=test_name,
-                platform=platform,
-                label="new",
-                revision=new_push.revision
-            ))
+            video_tasks.append(
+                VideoTask(
+                    task_id=task["status"]["taskId"],
+                    test_name=test_name,
+                    platform=platform,
+                    label="new",
+                    revision=new_push.revision,
+                )
+            )
 
         print(f"\nDownloading {len(video_tasks)} video artifacts...")
         results = await download_video_artifacts(session, video_tasks, output_dir, max_concurrent)
 
-        print(f"\nDownloaded:")
+        print("\nDownloaded:")
         print(f"  Base: {len(results['base'])} videos")
         print(f"  New:  {len(results['new'])} videos")
 
@@ -699,11 +703,15 @@ Examples:
     # Save comparison metadata
     meta_path = output_dir / "comparisons.json"
     with open(meta_path, "w") as f:
-        json.dump({
-            "base_revision": base_push.revision,
-            "new_revision": new_push.revision,
-            "comparisons": comparisons
-        }, f, indent=2)
+        json.dump(
+            {
+                "base_revision": base_push.revision,
+                "new_revision": new_push.revision,
+                "comparisons": comparisons,
+            },
+            f,
+            indent=2,
+        )
 
     print(f"\nFound {len(comparisons)} test/platform combinations for comparison")
     print(f"Metadata saved to: {meta_path}")
@@ -712,12 +720,13 @@ Examples:
         url = f"http://localhost:{args.port}"
         print(f"\nStarting viewer at {url}")
         from viewer import create_app
+
         app = create_app(output_dir)
 
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         app.run(host="0.0.0.0", port=args.port, debug=False)
     else:
-        print(f"\nTo view videos later, run:")
+        print("\nTo view videos later, run:")
         print(f"  python viewer.py {output_dir}")
 
 

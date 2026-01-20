@@ -5,21 +5,22 @@ Run with: pytest test_perf_sxs.py
 Or with uv: uv run pytest test_perf_sxs.py
 """
 
-import pytest
-from pathlib import Path
 import json
-import tempfile
-
 
 # Import functions to test
 import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 from perf_sxs import (
-    parse_perfcompare_url,
-    parse_try_url,
     extract_suite_and_platform,
     extract_test_info,
     load_high_confidence_from_file,
+    parse_perfcompare_url,
+    parse_try_url,
 )
 
 
@@ -83,9 +84,21 @@ class TestSuiteExtraction:
     def test_extract_multi_hyphen_suite(self):
         """Test extracting multi-hyphen suite names."""
         test_cases = [
-            ("test-windows11-64-24h2-nightlyasrelease/opt-browsertime-tp6-firefox-bing-search-e10s", "bing-search", "windows11-64-24h2-nightlyasrelease"),
-            ("test-macosx1470-64-shippable/opt-browsertime-tp6-firefox-google-slides-cold", "google-slides", "macosx1470-64-shippable"),
-            ("test-linux1804-64-qr/opt-browsertime-tp6-firefox-yahoo-mail-fission", "yahoo-mail", "linux1804-64-qr"),
+            (
+                "test-windows11-64-24h2-nightlyasrelease/opt-browsertime-tp6-firefox-bing-search-e10s",
+                "bing-search",
+                "windows11-64-24h2-nightlyasrelease",
+            ),
+            (
+                "test-macosx1470-64-shippable/opt-browsertime-tp6-firefox-google-slides-cold",
+                "google-slides",
+                "macosx1470-64-shippable",
+            ),
+            (
+                "test-linux1804-64-qr/opt-browsertime-tp6-firefox-yahoo-mail-fission",
+                "yahoo-mail",
+                "linux1804-64-qr",
+            ),
         ]
 
         for task_name, expected_suite, expected_platform in test_cases:
@@ -131,14 +144,14 @@ class TestHighConfidenceFiltering:
                         "suite": "amazon",
                         "platform": "linux1804-64-shippable-qr",
                         "confidence_text": "High",
-                        "confidence": 8.5
+                        "confidence": 8.5,
                     },
                     {
                         "suite": "google",
                         "platform": "linux1804-64-shippable-qr",
                         "confidence_text": "Low",
-                        "confidence": 0.5
-                    }
+                        "confidence": 0.5,
+                    },
                 ]
             },
             {
@@ -147,13 +160,13 @@ class TestHighConfidenceFiltering:
                         "suite": "cnn",
                         "platform": "macosx1470-64-nightlyasrelease",
                         "confidence_text": "High",
-                        "confidence": 12.0
+                        "confidence": 12.0,
                     }
                 ]
-            }
+            },
         ]
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(sample_data, f)
             temp_path = Path(f.name)
 
@@ -182,7 +195,7 @@ class TestHighConfidenceFiltering:
             }
         ]
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(sample_data, f)
             temp_path = Path(f.name)
 
@@ -229,18 +242,21 @@ class TestSuiteNameEdgeCases:
 @pytest.mark.unit
 class TestURLParsingMarked(TestURLParsing):
     """URL parsing tests (marked as unit tests)."""
+
     pass
 
 
 @pytest.mark.unit
 class TestSuiteExtractionMarked(TestSuiteExtraction):
     """Suite extraction tests (marked as unit tests)."""
+
     pass
 
 
 @pytest.mark.integration
 class TestHighConfidenceFilteringMarked(TestHighConfidenceFiltering):
     """High confidence filtering tests (marked as integration tests)."""
+
     pass
 
 

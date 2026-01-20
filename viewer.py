@@ -12,7 +12,8 @@ import os
 import threading
 import webbrowser
 from pathlib import Path
-from flask import Flask, render_template_string, send_file, jsonify
+
+from flask import Flask, jsonify, render_template_string, send_file
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -364,11 +365,7 @@ def create_app(video_dir: Path) -> Flask:
         with open(meta_path) as f:
             metadata = json.load(f)
     else:
-        metadata = {
-            "base_revision": None,
-            "new_revision": None,
-            "comparisons": {}
-        }
+        metadata = {"base_revision": None, "new_revision": None, "comparisons": {}}
 
     @app.route("/")
     def index():
@@ -377,7 +374,7 @@ def create_app(video_dir: Path) -> Flask:
             base_revision=metadata.get("base_revision"),
             new_revision=metadata.get("new_revision"),
             comparisons=metadata.get("comparisons", {}),
-            comparisons_json=json.dumps(metadata.get("comparisons", {}))
+            comparisons_json=json.dumps(metadata.get("comparisons", {})),
         )
 
     @app.route("/video/<path:video_path>")
@@ -404,7 +401,7 @@ def main():
         "video_dir",
         nargs="?",
         default="./sxs_videos",
-        help="Directory containing downloaded videos"
+        help="Directory containing downloaded videos",
     )
     parser.add_argument("--port", "-p", type=int, default=3333, help="Port to serve on")
     parser.add_argument("--host", "-H", default="0.0.0.0", help="Host to bind to")
