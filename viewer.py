@@ -9,6 +9,8 @@ Usage:
 import argparse
 import json
 import os
+import threading
+import webbrowser
 from pathlib import Path
 from flask import Flask, render_template_string, send_file, jsonify
 
@@ -392,8 +394,12 @@ def main():
         return 1
 
     app = create_app(video_dir)
-    print(f"Starting viewer at http://localhost:{args.port}")
+    url = f"http://localhost:{args.port}"
+    print(f"Starting viewer at {url}")
     print(f"Video directory: {video_dir.absolute()}")
+
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     app.run(host=args.host, port=args.port, debug=True)
 
 

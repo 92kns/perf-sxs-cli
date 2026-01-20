@@ -32,6 +32,8 @@ import re
 import sys
 import tarfile
 import tempfile
+import threading
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -531,9 +533,12 @@ Examples:
     print(f"Metadata saved to: {meta_path}")
 
     if not args.no_serve:
-        print(f"\nStarting viewer at http://localhost:{args.port}")
+        url = f"http://localhost:{args.port}"
+        print(f"\nStarting viewer at {url}")
         from viewer import create_app
         app = create_app(output_dir)
+
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         app.run(host="0.0.0.0", port=args.port, debug=False)
     else:
         print(f"\nTo view videos later, run:")
