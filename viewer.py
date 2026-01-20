@@ -190,10 +190,21 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="sidebar">
             <h2>Tests ({{ comparisons|length }})</h2>
+            {% set platforms = {} %}
             {% for key, comp in comparisons.items() %}
-            <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
-                <div class="platform">{{ comp.platform }}</div>
-                <div class="name">{{ comp.test_name }}</div>
+                {% if comp.platform not in platforms %}
+                    {% set _ = platforms.update({comp.platform: []}) %}
+                {% endif %}
+                {% set _ = platforms[comp.platform].append((key, comp)) %}
+            {% endfor %}
+            {% for platform in platforms|sort %}
+            <div class="platform-section">
+                <h3>{{ platform }}</h3>
+                {% for key, comp in platforms[platform] %}
+                <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
+                    <div class="name">{{ comp.test_name }}</div>
+                </div>
+                {% endfor %}
             </div>
             {% endfor %}
         </div>
