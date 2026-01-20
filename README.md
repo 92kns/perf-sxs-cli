@@ -188,8 +188,25 @@ output_dir/
 - Check network connection
 - Verify Try URLs and revisions exist
 
+## Testing
+
+```bash
+# Install dev dependencies
+uv sync --extra dev
+
+# Run all tests
+uv run pytest test_perf_sxs.py -v
+
+# Run only unit tests
+uv run pytest -v -m unit
+
+# Run with coverage
+uv run pytest --cov=perf_sxs --cov-report=html
+```
+
 ## Requirements
 
 - Python 3.8+
 - `aiohttp` >= 3.9.0
 - `flask` >= 2.0.0
+- `pytest` >= 7.0.0 (dev only)

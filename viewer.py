@@ -53,6 +53,7 @@ HTML_TEMPLATE = """
             border-right: 1px solid #0f3460;
             overflow-y: auto;
             padding: 1rem 0;
+            max-height: calc(100vh - 80px);
         }
         .sidebar h2 {
             padding: 0.5rem 1rem;
@@ -60,6 +61,18 @@ HTML_TEMPLATE = """
             text-transform: uppercase;
             color: #666;
             letter-spacing: 0.05em;
+        }
+        .platform-section {
+            margin-bottom: 1.5rem;
+        }
+        .platform-section h3 {
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #4ecca3;
+            background: #0f3460;
+            border-left: 3px solid #4ecca3;
+            margin-bottom: 0.5rem;
         }
         .test-item {
             padding: 0.75rem 1rem;

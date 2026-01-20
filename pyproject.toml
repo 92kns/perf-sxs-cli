@@ -19,5 +19,15 @@ dev = [
     "pytest-asyncio>=0.21.0",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests (fast, no I/O)",
+    "integration: Integration tests (may require network/files)",
+]
+addopts = "-v --tb=short"
+
 [tool.uv]
 python-preference = "managed"
