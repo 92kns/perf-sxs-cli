@@ -111,6 +111,92 @@ async def fetch_json(session: aiohttp.ClientSession, url: str) -> dict:
         return await resp.json()
 
 
+def load_high_confidence_from_file(json_path: Path) -> set[tuple[str, str]]:
+    """
+    Load perfcompare JSON from local file and extract (suite, platform) pairs with High confidence.
+    """
+    with open(json_path) as f:
+        data = json.load(f)
+
+    high_conf_tests = set()
+
+    for item in data:
+        for test_name, test_data in item.items():
+            for result in test_data:
+                if result.get("confidence_text") == "High":
+                    suite = result.get("suite")
+                    platform = result.get("platform")
+                    if suite and platform:
+                        high_conf_tests.add((suite, platform))
+
+    return high_conf_tests
+
+
+async def fetch_perfcompare_data_from_treeherder(session: aiohttp.ClientSession, perfcompare_url: str) -> set[tuple[str, str]]:
+    """
+    Fetch performance comparison data from Treeherder API and extract high confidence tests.
+
+    Uses the Treeherder API endpoint that PerfCompare itself uses:
+    https://treeherder.mozilla.org/api/perfcompare/results/
+    """
+    parsed = urlparse(perfcompare_url)
+    params = parse_qs(parsed.query)
+
+    base_rev = params.get("baseRev", [""])[0]
+    base_repo = params.get("baseRepo", ["mozilla-central"])[0]
+    new_rev = params.get("newRev", [""])[0]
+    new_repo = params.get("newRepo", ["mozilla-central"])[0]
+    framework = params.get("framework", ["1"])[0]
+    test_version = params.get("test_version", ["student-t"])[0]
+    replicates = params.get("replicates", ["false"])[0]
+
+    api_url = "https://treeherder.mozilla.org/api/perfcompare/results/"
+    api_params = {
+        "base_repository": base_repo,
+        "base_revision": base_rev,
+        "new_repository": new_repo,
+        "new_revision": new_rev,
+        "framework": framework,
+        "no_subtests": "true",
+        "replicates": replicates,
+        "test_version": test_version
+    }
+
+    query_string = "&".join(f"{k}={v}" for k, v in api_params.items())
+    full_url = f"{api_url}?{query_string}"
+
+    try:
+        print(f"  Calling Treeherder API...")
+        async with session.get(full_url) as resp:
+            if resp.status != 200:
+                print(f"  Error: Treeherder API returned status {resp.status}")
+                return set()
+
+            results = await resp.json()
+
+            if not isinstance(results, list):
+                print(f"  Error: Unexpected API response format")
+                return set()
+
+            high_conf_tests = set()
+
+            for result in results:
+                if result.get("confidence_text") == "High":
+                    suite = result.get("suite")
+                    platform = result.get("platform")
+                    if suite and platform:
+                        high_conf_tests.add((suite, platform))
+
+            return high_conf_tests
+
+    except Exception as e:
+        print(f"  Error fetching from Treeherder API: {e}")
+        print(f"  Fallback: Use --confidence-json with manually downloaded JSON")
+        return set()
+
+
+
+
 async def find_task_group_id(session: aiohttp.ClientSession, revision: str, repo: str) -> str:
     """Find the task group ID for a revision."""
     index_url = f"{TASKCLUSTER_INDEX}/tasks/gecko.v2.{repo}.revision.{revision}.taskgraph"
@@ -159,28 +245,69 @@ def extract_test_info(task_name: str) -> tuple[str, str]:
     return task_name, "unknown"
 
 
-def filter_browsertime_video_tasks(tasks: list, platforms: list[str] | None = None) -> list[dict]:
-    """Filter tasks to only browsertime tests with video artifacts. Deduplicates by test/platform."""
+def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
+    """
+    Extract suite name and platform for perfcompare matching.
+
+    Task name: test-linux1804-64-shippable-qr/opt-browsertime-tp6-firefox-amazon-e10s
+    Returns: ("amazon", "linux1804-64-shippable-qr")
+    """
+    parts = task_name.split("-browsertime-")
+    if len(parts) != 2:
+        return "", ""
+
+    platform_part = parts[0].replace("test-", "")
+    platform = platform_part.split("/")[0]
+
+    test_part = parts[1]
+    suite_parts = test_part.split("-firefox-")
+    if len(suite_parts) == 2:
+        after_firefox = suite_parts[1]
+
+        known_suffixes = [
+            "-e10s", "-fission", "-live", "-cold", "-warm",
+            "-webrender", "-bytecode-cached", "-nofis"
+        ]
+
+        suite = after_firefox
+        for suffix in known_suffixes:
+            if suffix in suite:
+                suite = suite.split(suffix)[0]
+
+        return suite, platform
+
+    return "", ""
+
+
+def filter_browsertime_video_tasks(
+    tasks: list,
+    platforms: list[str] | None = None,
+    high_conf_tests: set[tuple[str, str]] | None = None
+) -> list[dict]:
+    """
+    Filter tasks to only browsertime tests with video artifacts. Deduplicates by test/platform.
+
+    Args:
+        tasks: List of TaskCluster tasks
+        platforms: Optional list of platform filters (e.g., ["linux", "windows"])
+        high_conf_tests: Optional set of (suite, platform) tuples from perfcompare with High confidence
+    """
     filtered = []
-    seen = set()  # Track test_name/platform combos to avoid duplicates
+    seen = set()
 
     for task in tasks:
         task_name = task.get("task", {}).get("metadata", {}).get("name", "")
 
-        # Must be a browsertime test
         if "browsertime" not in task_name:
             continue
 
-        # Skip profiling tasks
         if "profiling" in task_name:
             continue
 
-        # Must be completed successfully
         status = task.get("status", {}).get("state")
         if status != "completed":
             continue
 
-        # Check platform filter
         if platforms:
             platform_match = False
             for p in platforms:
@@ -190,7 +317,13 @@ def filter_browsertime_video_tasks(tasks: list, platforms: list[str] | None = No
             if not platform_match:
                 continue
 
-        # Deduplicate: only keep first task per test/platform combo
+        if high_conf_tests:
+            suite, platform = extract_suite_and_platform(task_name)
+            if not suite or not platform:
+                continue
+            if (suite, platform) not in high_conf_tests:
+                continue
+
         test_name, platform = extract_test_info(task_name)
         key = f"{platform}:{test_name}"
         if key in seen:
@@ -258,8 +391,8 @@ async def download_video_artifacts(
 
         # Try different artifact names (note: .tgz extension)
         artifact_names = [
-            "public/test_info/browsertime-videos-original.tgz",
             "public/test_info/browsertime-videos-annotated.tgz",
+            "public/test_info/browsertime-videos-original.tgz",
             "public/test_info/browsertime-videos.tgz",
         ]
 
@@ -400,6 +533,16 @@ Examples:
         action="store_true"
     )
     parser.add_argument(
+        "--all-tests",
+        help="Download all tests (ignore High confidence filter from perfcompare)",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--confidence-json",
+        help="Path to local perfcompare JSON file for confidence filtering",
+        default=None
+    )
+    parser.add_argument(
         "--port",
         help="Port for Flask server (default: 3333)",
         type=int,
@@ -409,10 +552,12 @@ Examples:
     args = parser.parse_args()
 
     print("Parsing revisions...")
+    perfcompare_url = None
     try:
         if len(args.revisions) == 1:
             try:
                 base_push, new_push = parse_perfcompare_url(args.revisions[0])
+                perfcompare_url = args.revisions[0]
                 print(f"  Parsed perfcompare URL")
             except ValueError:
                 print(f"Error: Single argument must be a perfcompare URL")
@@ -462,10 +607,41 @@ Examples:
         print(f"  Base: {len(base_tasks)} total tasks")
         print(f"  New:  {len(new_tasks)} total tasks")
 
+        high_conf_tests = None
+        if args.confidence_json and not args.all_tests:
+            print(f"\nLoading high confidence tests from local file: {args.confidence_json}")
+            json_path = Path(args.confidence_json)
+            if json_path.exists():
+                high_conf_tests = load_high_confidence_from_file(json_path)
+                print(f"  Found {len(high_conf_tests)} high confidence test/platform combinations")
+                print(f"  Unique suites: {sorted(set(s for s, p in high_conf_tests))}")
+                print(f"  Will only download videos for high confidence changes")
+            else:
+                print(f"  Error: File not found: {args.confidence_json}")
+        elif perfcompare_url and not args.all_tests:
+            print("\nFetching high confidence tests from Treeherder API...")
+            high_conf_tests = await fetch_perfcompare_data_from_treeherder(session, perfcompare_url)
+            if high_conf_tests:
+                print(f"  Found {len(high_conf_tests)} high confidence test/platform combinations")
+                print(f"  Unique suites: {sorted(set(s for s, p in high_conf_tests))}")
+                print(f"  Will only download videos for high confidence changes")
+            else:
+                print(f"  No high confidence filter applied (API fetch may have failed)")
+        elif args.all_tests:
+            print("\n--all-tests flag set: downloading all tests (ignoring confidence filter)")
+
         # Filter to browsertime video tasks
         print("\nFiltering browsertime tasks...")
-        base_bt = filter_browsertime_video_tasks(base_tasks, platforms)
-        new_bt = filter_browsertime_video_tasks(new_tasks, platforms)
+        base_bt = filter_browsertime_video_tasks(base_tasks, platforms, high_conf_tests)
+        new_bt = filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests)
+
+        if high_conf_tests:
+            print(f"\n  Debug: Showing first 5 tasks that passed filtering:")
+            for i, task in enumerate(base_bt[:5]):
+                task_name = task["task"]["metadata"]["name"]
+                suite, platform = extract_suite_and_platform(task_name)
+                print(f"    {i+1}. {task_name}")
+                print(f"       -> ({suite}, {platform})")
 
         # Apply test name filters
         if test_filters:

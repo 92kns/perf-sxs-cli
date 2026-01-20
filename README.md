@@ -27,6 +27,33 @@ uv run python perf_sxs.py \
 
 This is the most convenient method since perfcompare URLs contain both revisions in a single link. The viewer will automatically launch when downloads complete.
 
+**Smart Filtering (Automatic):** When you provide a perfcompare URL, the tool automatically:
+1. Calls the Treeherder API to fetch performance comparison data
+2. Filters to only tests with `confidence_text: "High"` (statistically significant changes)
+3. Downloads only videos for those high-confidence tests
+
+This saves time and disk space by focusing on important regressions/improvements.
+
+```bash
+# Automatic high confidence filtering
+uv run python perf_sxs.py \
+    "https://perf.compare/compare-results?baseRev=BASE&newRev=NEW&..."
+```
+
+**Manual JSON file (alternative):** If you prefer to use a local JSON file:
+```bash
+# 1. Download JSON from perfcompare (click "Download JSON" button)
+# 2. Run with --confidence-json flag:
+uv run python perf_sxs.py \
+    "https://perf.compare/compare-results?..." \
+    --confidence-json ./perfcompare.json
+```
+
+**Download all tests (no filtering):**
+```bash
+uv run python perf_sxs.py "https://perf.compare/compare-results?..." --all-tests
+```
+
 ### Using two separate revisions
 
 ```bash
@@ -78,6 +105,8 @@ uv run python viewer.py ./videos
 | `--output`, `-o` | Output directory | `./sxs_videos` |
 | `--max-downloads`, `-m` | Concurrent downloads | 10 |
 | `--no-serve` | Skip auto-launching viewer after download | false |
+| `--confidence-json` | Path to perfcompare JSON for High confidence filtering | None |
+| `--all-tests` | Download all tests (ignore High confidence filter) | false |
 | `--port` | Viewer port | 3333 |
 
 ## Examples
@@ -104,10 +133,12 @@ uv run python perf_sxs.py <base-rev> <new-rev> \
 
 1. **Parse Input** - Extracts revisions from perfcompare URLs, Treeherder URLs, or plain revision strings
 2. **Find Task Groups** - Queries TaskCluster index API
-3. **Filter Tasks** - Finds completed browsertime tests, deduplicates by test/platform
-4. **Download Videos** - Async downloads with `aiohttp` (configurable concurrency)
-5. **Extract & Organize** - Extracts tar.gz archives, organizes by base/new
-6. **Generate Metadata** - Creates `comparisons.json` for viewer
+3. **Load Confidence Data** - If `--confidence-json` provided, loads high confidence test/platform pairs from local JSON
+4. **Filter Tasks** - Finds completed browsertime tests, filters by confidence (if applicable), deduplicates by test/platform
+5. **Download Videos** - Async downloads of annotated videos with `aiohttp` (configurable concurrency)
+6. **Extract & Organize** - Extracts tar.gz archives, organizes by base/new
+7. **Generate Metadata** - Creates `comparisons.json` for viewer
+8. **Launch Viewer** - Auto-opens browser to side-by-side comparison view
 
 ## Viewer Features
 
