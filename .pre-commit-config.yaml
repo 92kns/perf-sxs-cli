@@ -1,0 +1,29 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        name: ruff linter
+        args: [--fix]
+      - id: ruff-format
+        name: ruff formatter
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.19.1
+    hooks:
+      - id: mypy
+        name: mypy type checker
+        files: ^(perf_sxs\.py|viewer\.py)$
+        additional_dependencies:
+          - aiohttp>=3.9.0
+          - flask>=2.0.0
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        always_run: true
+        args: [tests/, -v]

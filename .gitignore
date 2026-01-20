@@ -31,7 +31,6 @@ wheels/
 venv/
 ENV/
 .uv/
-uv.lock
 
 # IDEs
 .vscode/
