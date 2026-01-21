@@ -74,6 +74,31 @@ HTML_TEMPLATE = """
             background: #0f3460;
             border-left: 3px solid #4ecca3;
             margin-bottom: 0.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            user-select: none;
+        }
+        .platform-section h3:hover {
+            background: #1a1a2e;
+        }
+        .platform-section h3 .toggle-icon {
+            font-size: 0.7rem;
+            transition: transform 0.2s;
+        }
+        .platform-section.collapsed h3 .toggle-icon {
+            transform: rotate(-90deg);
+        }
+        .platform-section .test-list {
+            max-height: 1000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out, opacity 0.2s;
+            opacity: 1;
+        }
+        .platform-section.collapsed .test-list {
+            max-height: 0;
+            opacity: 0;
         }
         .test-item {
             padding: 0.75rem 1rem;
@@ -127,7 +152,10 @@ HTML_TEMPLATE = """
         .video-panel.new h3 { color: #e94560; }
         .video-panel video {
             width: 100%;
+            max-height: calc(100vh - 300px);
             display: block;
+            object-fit: contain;
+            background: #000;
         }
         .controls {
             background: #16213e;
@@ -191,6 +219,12 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="sidebar">
             <h2>Tests ({{ comparisons|length }})</h2>
+            <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #0f3460;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
+                    <input type="checkbox" id="auto-play-toggle" onchange="toggleAutoPlay(this.checked)">
+                    Auto-play on select
+                </label>
+            </div>
             {% set platforms = {} %}
             {% for key, comp in comparisons.items() %}
                 {% if comp.platform not in platforms %}
@@ -200,12 +234,17 @@ HTML_TEMPLATE = """
             {% endfor %}
             {% for platform in platforms|sort %}
             <div class="platform-section">
-                <h3>{{ platform }}</h3>
-                {% for key, comp in platforms[platform] %}
-                <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
-                    <div class="name">{{ comp.test_name }}</div>
+                <h3 onclick="togglePlatform('{{ platform }}')">
+                    <span>{{ platform }} ({{ platforms[platform]|length }})</span>
+                    <span class="toggle-icon">▼</span>
+                </h3>
+                <div class="test-list">
+                    {% for key, comp in platforms[platform] %}
+                    <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
+                        <div class="name">{{ comp.test_name }}</div>
+                    </div>
+                    {% endfor %}
                 </div>
-                {% endfor %}
             </div>
             {% endfor %}
         </div>
@@ -271,6 +310,7 @@ HTML_TEMPLATE = """
         const comparisons = {{ comparisons_json|safe }};
         let syncEnabled = {};
         let currentTest = null;
+        let autoPlayEnabled = false;
 
         function selectTest(key) {
             const safeKey = key.replace('/', '-');
@@ -285,6 +325,11 @@ HTML_TEMPLATE = """
             document.getElementById(`view-${safeKey}`).classList.add('active');
 
             currentTest = key;
+
+            // Auto-play if enabled
+            if (autoPlayEnabled) {
+                setTimeout(() => playBoth(key), 100);
+            }
         }
 
         function playBoth(key) {
@@ -341,6 +386,15 @@ HTML_TEMPLATE = """
             if (comp.new_videos[index]) {
                 document.getElementById(`new-${safeKey}`).src = '/video/' + encodeURIComponent(comp.new_videos[index]);
             }
+        }
+
+        function togglePlatform(platform) {
+            const section = event.target.closest('.platform-section');
+            section.classList.toggle('collapsed');
+        }
+
+        function toggleAutoPlay(enabled) {
+            autoPlayEnabled = enabled;
         }
 
         // Select first test by default
