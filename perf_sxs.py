@@ -482,8 +482,8 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
                 comparisons[key] = {
                     "platform": platform,
                     "test_name": test_name,
-                    "base_videos": [str(v) for v in sorted(base_videos)],
-                    "new_videos": [str(v) for v in sorted(new_videos)],
+                    "base_videos": [str(v.relative_to(output_dir)) for v in sorted(base_videos)],
+                    "new_videos": [str(v.relative_to(output_dir)) for v in sorted(new_videos)],
                 }
 
     return comparisons
