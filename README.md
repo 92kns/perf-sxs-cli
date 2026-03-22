@@ -162,12 +162,14 @@ uv run python perf_sxs.py <base-rev> <new-rev> \
 5. **Download Videos** - Async downloads of annotated videos with `aiohttp` (configurable concurrency). Downloads `perfherder-data.json` per task to identify the median run; keeps only that video by default (`--all-runs` to keep all)
 6. **Extract & Organize** - Extracts tar.gz archives, organizes by base/new
 7. **Generate Metadata** - Creates `comparisons.json` for viewer
-8. **Launch Viewer** - Auto-opens browser to side-by-side comparison view
+8. **Report missing** - Lists any tasks where no video artifact was found after downloading
+9. **Launch Viewer** - Auto-opens browser to side-by-side comparison view
 
 ## Viewer Features
 
-- **Side-by-side playback** - Synchronized base vs new videos
+- **Side-by-side playback** - Synchronized base vs new videos; auto-plays on test selection
 - **Single revision mode** - Full-width single panel when using `--no-compare`
+- **Sidebar search** - Fuzzy search with full extended syntax (`'exact`, `^prefix`, `!negate`, `a | b` OR)
 - **Playback controls** - Play/pause/restart both videos together
 - **Speed adjustment** - 0.25x to 2x playback speed
 - **Run selection** - Switch between runs when using `--all-runs`; median run labeled and selected by default
@@ -183,12 +185,14 @@ output_dir/
 │       └── <test-name>/
 │           └── <task-id>/
 │               └── *.mp4
-└── new/                       # New revision videos
+└── new/                       # New revision videos (absent with --no-compare)
     └── <platform>/
         └── <test-name>/
             └── <task-id>/
                 └── *.mp4
 ```
+
+The viewer loads from `templates/viewer.html` and serves `static/fuse.min.js` — both are included in the repo alongside `viewer.py`.
 
 ## Performance
 

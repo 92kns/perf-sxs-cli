@@ -16,7 +16,6 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, send_file
 
 
-
 def create_app(video_dir: Path) -> Flask:
     """Create and configure the Flask app."""
     app = Flask(__name__, template_folder="templates", static_folder="static")

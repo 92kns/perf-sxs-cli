@@ -333,9 +333,7 @@ class TestOrganizeSingleRevision:
     """Test single-revision video organization."""
 
     def _make_video_tree(self, root: Path):
-        video_path = (
-            root / "base" / "test-linux_opt" / "browsertime-tp6-amazon" / "task123"
-        )
+        video_path = root / "base" / "test-linux_opt" / "browsertime-tp6-amazon" / "task123"
         video_path.mkdir(parents=True)
         (video_path / "video0.mp4").write_bytes(b"")
         return video_path

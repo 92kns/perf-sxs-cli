@@ -78,7 +78,11 @@ def parse_lando_url(url: str) -> tuple[str, str, str, str, dict]:
 
     base_repo = params.get("baseRepo", ["try"])[0]
     new_repo = params.get("newRepo", ["try"])[0]
-    extra = {k: v[0] for k, v in params.items() if k not in ("baseLando", "newLando", "baseRepo", "newRepo")}
+    extra = {
+        k: v[0]
+        for k, v in params.items()
+        if k not in ("baseLando", "newLando", "baseRepo", "newRepo")
+    }
     return base_id, new_id, base_repo, new_repo, extra
 
 
@@ -91,7 +95,9 @@ async def resolve_lando_id(session: aiohttp.ClientSession, lando_id: str) -> str
         data = await resp.json(content_type=None)
         commit_id = data.get("commit_id")
         if not commit_id or not isinstance(commit_id, str):
-            raise Exception(f"No commit_id in Lando response for job {lando_id} (job may still be pending)")
+            raise Exception(
+                f"No commit_id in Lando response for job {lando_id} (job may still be pending)"
+            )
         return commit_id
 
 
@@ -707,8 +713,12 @@ Examples:
                         print("  Parsed perfcompare URL")
                     except ValueError:
                         print("Error: Single argument must be a perfcompare URL")
-                        print("  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
-                        print("  Or a lando URL: https://perf.compare/compare-lando-results?baseLando=...&newLando=...")
+                        print(
+                            "  Expected: https://perf.compare/compare-results?baseRev=...&newRev=..."
+                        )
+                        print(
+                            "  Or a lando URL: https://perf.compare/compare-lando-results?baseLando=...&newLando=..."
+                        )
                         print("  Or provide two separate revisions/URLs, or use --no-compare")
                         sys.exit(1)
         elif len(args.revisions) == 2:
@@ -736,7 +746,7 @@ Examples:
         # Resolve lando IDs to revision hashes if needed
         if lando_ids:
             base_id, new_id, base_repo, new_repo, extra_params = lando_ids
-            print(f"\nResolving Lando IDs via Lando API...")
+            print("\nResolving Lando IDs via Lando API...")
             try:
                 base_rev, new_rev = await asyncio.gather(
                     resolve_lando_id(session, base_id),
@@ -754,8 +764,7 @@ Examples:
             perfcompare_url = (
                 f"https://perf.compare/compare-results?"
                 f"baseRev={base_rev}&baseRepo={base_repo}"
-                f"&newRev={new_rev}&newRepo={new_repo}"
-                + (f"&{extra_qs}" if extra_qs else "")
+                f"&newRev={new_rev}&newRepo={new_repo}" + (f"&{extra_qs}" if extra_qs else "")
             )
 
         print(f"\n  Base: {base_push.revision[:12]} ({base_push.repo})")
@@ -814,7 +823,11 @@ Examples:
         # Filter to browsertime video tasks
         print("\nFiltering browsertime tasks...")
         base_bt = filter_browsertime_video_tasks(base_tasks, platforms, high_conf_tests)
-        new_bt = filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests) if new_push else []
+        new_bt = (
+            filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests)
+            if new_push
+            else []
+        )
 
         # Apply test name filters
         if test_filters:
@@ -878,8 +891,12 @@ Examples:
         print(f"  New:  {len(results['new'])} videos")
 
         # Report tasks where no video was downloaded
-        downloaded_base_ids = {p.parts[p.parts.index("base") + 2] for p in results["base"] if "base" in p.parts}
-        downloaded_new_ids = {p.parts[p.parts.index("new") + 2] for p in results["new"] if "new" in p.parts}
+        downloaded_base_ids = {
+            p.parts[p.parts.index("base") + 2] for p in results["base"] if "base" in p.parts
+        }
+        downloaded_new_ids = {
+            p.parts[p.parts.index("new") + 2] for p in results["new"] if "new" in p.parts
+        }
         missing = []
         for vt in video_tasks:
             downloaded = downloaded_base_ids if vt.label == "base" else downloaded_new_ids
