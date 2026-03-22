@@ -21,6 +21,7 @@ from perf_sxs import (
     find_median_run_index,
     load_high_confidence_from_file,
     organize_single_revision,
+    parse_lando_url,
     parse_perfcompare_url,
     parse_try_url,
     read_median_idx,
@@ -239,6 +240,37 @@ class TestSuiteNameEdgeCases:
 
         assert suite == ""
         assert platform == ""
+
+
+class TestLandoURLParsing:
+    """Test parsing of perfcompare lando URLs."""
+
+    def test_parse_lando_url(self):
+        url = "https://perf.compare/compare-lando-results?baseLando=181700&newLando=181701&baseRepo=try&newRepo=try&framework=13"
+        base_id, new_id, base_repo, new_repo, extra = parse_lando_url(url)
+        assert base_id == "181700"
+        assert new_id == "181701"
+        assert base_repo == "try"
+        assert new_repo == "try"
+        assert extra.get("framework") == "13"
+
+    def test_parse_lando_url_default_repos(self):
+        url = "https://perf.compare/compare-lando-results?baseLando=100&newLando=200"
+        base_id, new_id, base_repo, new_repo, extra = parse_lando_url(url)
+        assert base_id == "100"
+        assert new_id == "200"
+        assert base_repo == "try"
+        assert new_repo == "try"
+
+    def test_parse_lando_url_missing_ids_raises(self):
+        url = "https://perf.compare/compare-lando-results?baseRepo=try"
+        with pytest.raises(ValueError):
+            parse_lando_url(url)
+
+    def test_parse_lando_url_wrong_domain_raises(self):
+        url = "https://example.com/compare-lando-results?baseLando=1&newLando=2"
+        with pytest.raises(ValueError):
+            parse_lando_url(url)
 
 
 class TestMedianRunIndex:

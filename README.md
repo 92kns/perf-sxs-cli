@@ -67,6 +67,15 @@ uv run python perf_sxs.py 881d2bbfaf536748b4ebdbadeaaa2c9c269f91e8 --no-compare
 
 Useful when you want to inspect videos from a single push without a baseline. The viewer shows a single full-width panel instead of side-by-side.
 
+### Using a lando perfcompare URL
+
+```bash
+uv run python perf_sxs.py \
+    "https://perf.compare/compare-lando-results?baseLando=181700&newLando=181701&baseRepo=try&newRepo=try&framework=13"
+```
+
+Lando IDs are resolved to revision hashes via the Lando API before proceeding. Note: if the Lando job is still pending (< ~30s after push), the tool will error — wait and retry.
+
 ### Using two separate revisions
 
 ```bash
@@ -146,7 +155,7 @@ uv run python perf_sxs.py <base-rev> <new-rev> \
 
 ## How It Works
 
-1. **Parse Input** - Extracts revisions from perfcompare URLs, Treeherder URLs, or plain revision strings
+1. **Parse Input** - Extracts revisions from perfcompare URLs (including lando), Treeherder URLs, or plain revision strings. Lando IDs are resolved to revision hashes via `api.lando.services.mozilla.com`
 2. **Find Task Groups** - Queries TaskCluster index API
 3. **Load Confidence Data** - If `--confidence-json` provided, loads high confidence test/platform pairs from local JSON
 4. **Filter Tasks** - Finds completed browsertime tests, filters by confidence (if applicable), deduplicates by test/platform

@@ -60,6 +60,41 @@ class VideoTask:
     revision: str
 
 
+LANDO_API = "https://api.lando.services.mozilla.com"
+
+
+def parse_lando_url(url: str) -> tuple[str, str, str, str, dict]:
+    """Extract baseLando, newLando IDs, repos, and extra params from a perfcompare lando URL."""
+    parsed = urlparse(url)
+    if "perf.compare" not in parsed.netloc and "perfcompare" not in parsed.netloc:
+        raise ValueError(f"Not a perfcompare URL: {url}")
+
+    params = parse_qs(parsed.query)
+    base_id = params.get("baseLando", [None])[0]
+    new_id = params.get("newLando", [None])[0]
+
+    if not base_id or not new_id:
+        raise ValueError(f"Could not parse lando IDs from URL: {url}")
+
+    base_repo = params.get("baseRepo", ["try"])[0]
+    new_repo = params.get("newRepo", ["try"])[0]
+    extra = {k: v[0] for k, v in params.items() if k not in ("baseLando", "newLando", "baseRepo", "newRepo")}
+    return base_id, new_id, base_repo, new_repo, extra
+
+
+async def resolve_lando_id(session: aiohttp.ClientSession, lando_id: str) -> str:
+    """Resolve a Lando landing job ID to a revision hash via the Lando API."""
+    url = f"{LANDO_API}/landing_jobs/{lando_id}"
+    async with session.get(url) as resp:
+        if resp.status != 200:
+            raise Exception(f"Lando API returned HTTP {resp.status} for job {lando_id}")
+        data = await resp.json(content_type=None)
+        commit_id = data.get("commit_id")
+        if not commit_id or not isinstance(commit_id, str):
+            raise Exception(f"No commit_id in Lando response for job {lando_id} (job may still be pending)")
+        return commit_id
+
+
 def parse_perfcompare_url(url: str) -> tuple[TryPush, TryPush]:
     """Extract base and new revisions from a perfcompare URL."""
     parsed = urlparse(url)
@@ -649,21 +684,33 @@ Examples:
 
     print("Parsing revisions...")
     perfcompare_url = None
+    lando_ids: tuple[str, str, str, str] | None = None
     new_push = None
     try:
         if len(args.revisions) == 1:
             if args.no_compare:
                 base_push = parse_try_url(args.revisions[0])
             else:
+                url = args.revisions[0]
+                # Try lando URL first, then regular perfcompare URL
                 try:
-                    base_push, new_push = parse_perfcompare_url(args.revisions[0])
-                    perfcompare_url = args.revisions[0]
-                    print("  Parsed perfcompare URL")
+                    lando_ids = parse_lando_url(url)
+                    if "compare-lando" not in url:
+                        raise ValueError("not a lando URL")
+                    base_push = TryPush(revision="", repo=lando_ids[2])
+                    new_push = TryPush(revision="", repo=lando_ids[3])
+                    print("  Parsed lando perfcompare URL (will resolve IDs via Lando API)")
                 except ValueError:
-                    print("Error: Single argument must be a perfcompare URL")
-                    print("  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
-                    print("  Or provide two separate revisions/URLs, or use --no-compare")
-                    sys.exit(1)
+                    try:
+                        base_push, new_push = parse_perfcompare_url(url)
+                        perfcompare_url = url
+                        print("  Parsed perfcompare URL")
+                    except ValueError:
+                        print("Error: Single argument must be a perfcompare URL")
+                        print("  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
+                        print("  Or a lando URL: https://perf.compare/compare-lando-results?baseLando=...&newLando=...")
+                        print("  Or provide two separate revisions/URLs, or use --no-compare")
+                        sys.exit(1)
         elif len(args.revisions) == 2:
             base_push = parse_try_url(args.revisions[0])
             new_push = parse_try_url(args.revisions[1])
@@ -676,10 +723,6 @@ Examples:
         print(f"Error: {e}")
         sys.exit(1)
 
-    print(f"  Base: {base_push.revision[:12]} ({base_push.repo})")
-    if new_push:
-        print(f"  New:  {new_push.revision[:12]} ({new_push.repo})")
-
     # Parse filters
     platforms = args.platforms.split(",") if args.platforms else None
     test_filters = args.tests.split(",") if args.tests else None
@@ -690,6 +733,35 @@ Examples:
     max_concurrent = args.max_downloads
 
     async with aiohttp.ClientSession() as session:
+        # Resolve lando IDs to revision hashes if needed
+        if lando_ids:
+            base_id, new_id, base_repo, new_repo, extra_params = lando_ids
+            print(f"\nResolving Lando IDs via Lando API...")
+            try:
+                base_rev, new_rev = await asyncio.gather(
+                    resolve_lando_id(session, base_id),
+                    resolve_lando_id(session, new_id),
+                )
+            except Exception as e:
+                print(f"  Error: {e}")
+                sys.exit(1)
+            base_push = TryPush(revision=base_rev, repo=base_repo)
+            new_push = TryPush(revision=new_rev, repo=new_repo)
+            print(f"  Base lando {base_id} -> {base_rev[:12]}")
+            print(f"  New  lando {new_id} -> {new_rev[:12]}")
+            # Build synthetic perfcompare URL for confidence filtering
+            extra_qs = "&".join(f"{k}={v}" for k, v in extra_params.items())
+            perfcompare_url = (
+                f"https://perf.compare/compare-results?"
+                f"baseRev={base_rev}&baseRepo={base_repo}"
+                f"&newRev={new_rev}&newRepo={new_repo}"
+                + (f"&{extra_qs}" if extra_qs else "")
+            )
+
+        print(f"\n  Base: {base_push.revision[:12]} ({base_push.repo})")
+        if new_push:
+            print(f"  New:  {new_push.revision[:12]} ({new_push.repo})")
+
         # Find task group IDs
         print("\nFinding task groups...")
         base_push.task_group_id = await find_task_group_id(
