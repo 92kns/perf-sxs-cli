@@ -371,11 +371,44 @@ async def download_artifact(
             return False
 
 
+async def fetch_perfherder_data(
+    session: aiohttp.ClientSession,
+    task_id: str,
+    semaphore: asyncio.Semaphore,
+) -> dict | None:
+    """Download perfherder-data.json artifact for a task."""
+    url = f"{TASKCLUSTER_QUEUE}/task/{task_id}/artifacts/public/perfherder-data.json"
+    async with semaphore:
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.json(content_type=None)
+        except Exception:
+            return None
+
+
+def find_median_run_index(data: dict) -> int:
+    """Find the run index whose replicate value is closest to the median (subtest value)."""
+    try:
+        subtests = data["suites"][0]["subtests"]
+        if not subtests:
+            return 0
+        replicates = subtests[0]["replicates"]
+        median_val = subtests[0]["value"]
+        if len(replicates) <= 1:
+            return 0
+        return min(range(len(replicates)), key=lambda i: abs(replicates[i] - median_val))
+    except (KeyError, IndexError, TypeError):
+        return 0
+
+
 async def download_video_artifacts(
     session: aiohttp.ClientSession,
     video_tasks: list[VideoTask],
     output_dir: Path,
     max_concurrent: int = 10,
+    all_runs: bool = False,
 ) -> dict[str, list[Path]]:
     """Download video artifacts for all tasks."""
     semaphore = asyncio.Semaphore(max_concurrent)
@@ -410,7 +443,6 @@ async def download_video_artifacts(
             )
 
             if success:
-                # Extract the tar.gz
                 try:
                     extract_dir = task_dir / vt.task_id
                     extract_dir.mkdir(parents=True, exist_ok=True)
@@ -418,11 +450,24 @@ async def download_video_artifacts(
                     with tarfile.open(tar_path, "r:gz") as tar:
                         tar.extractall(extract_dir)
 
-                    # Find MP4 files
-                    for mp4 in extract_dir.rglob("*.mp4"):
-                        downloaded.append(mp4)
+                    mp4s = sorted(extract_dir.rglob("*.mp4"))
 
-                    # Clean up tar file
+                    ph_data = await fetch_perfherder_data(session, vt.task_id, semaphore)
+                    median_idx = find_median_run_index(ph_data) if ph_data else 0
+                    median_idx = min(median_idx, len(mp4s) - 1) if mp4s else 0
+
+                    if all_runs:
+                        downloaded = list(mp4s)
+                        # Write sidecar so viewer can label the median run
+                        (extract_dir / "median_idx.txt").write_text(str(median_idx))
+                    else:
+                        # Keep only the median video
+                        for i, mp4 in enumerate(mp4s):
+                            if i != median_idx:
+                                mp4.unlink()
+                        if mp4s:
+                            downloaded = [mp4s[median_idx]]
+
                     tar_path.unlink()
 
                 except Exception as e:
@@ -447,6 +492,19 @@ async def download_video_artifacts(
     return results
 
 
+def read_median_idx(test_dir: Path) -> int | None:
+    """Read median_idx.txt sidecar written during --all-runs download."""
+    for task_dir in test_dir.iterdir():
+        if task_dir.is_dir():
+            idx_file = task_dir / "median_idx.txt"
+            if idx_file.exists():
+                try:
+                    return int(idx_file.read_text().strip())
+                except ValueError:
+                    return None
+    return None
+
+
 def organize_videos_for_comparison(output_dir: Path) -> dict:
     """Organize downloaded videos into a structure for the viewer."""
     comparisons: dict[str, dict] = {}
@@ -457,7 +515,6 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
     if not base_dir.exists() or not new_dir.exists():
         return comparisons
 
-    # Find matching test/platform combinations
     for platform_dir in base_dir.iterdir():
         if not platform_dir.is_dir():
             continue
@@ -468,22 +525,22 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
                 continue
             test_name = test_dir.name
 
-            # Check if new also has this test/platform
             new_test_dir = new_dir / platform / test_name
             if not new_test_dir.exists():
                 continue
 
-            # Find MP4 files in both
-            base_videos = list(test_dir.rglob("*.mp4"))
-            new_videos = list(new_test_dir.rglob("*.mp4"))
+            base_videos = sorted(test_dir.rglob("*.mp4"))
+            new_videos = sorted(new_test_dir.rglob("*.mp4"))
 
             if base_videos and new_videos:
                 key = f"{platform}/{test_name}"
                 comparisons[key] = {
                     "platform": platform,
                     "test_name": test_name,
-                    "base_videos": [str(v.relative_to(output_dir)) for v in sorted(base_videos)],
-                    "new_videos": [str(v.relative_to(output_dir)) for v in sorted(new_videos)],
+                    "base_videos": [str(v.relative_to(output_dir)) for v in base_videos],
+                    "new_videos": [str(v.relative_to(output_dir)) for v in new_videos],
+                    "base_median_idx": read_median_idx(test_dir),
+                    "new_median_idx": read_median_idx(new_test_dir),
                 }
 
     return comparisons
@@ -536,6 +593,11 @@ Examples:
     parser.add_argument(
         "--all-tests",
         help="Download all tests (ignore High confidence filter from perfcompare)",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--all-runs",
+        help="Download all runs (default: only the median run per test)",
         action="store_true",
     )
     parser.add_argument(
@@ -633,14 +695,6 @@ Examples:
         base_bt = filter_browsertime_video_tasks(base_tasks, platforms, high_conf_tests)
         new_bt = filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests)
 
-        if high_conf_tests:
-            print("\n  Debug: Showing first 5 tasks that passed filtering:")
-            for i, task in enumerate(base_bt[:5]):
-                task_name = task["task"]["metadata"]["name"]
-                suite, platform = extract_suite_and_platform(task_name)
-                print(f"    {i + 1}. {task_name}")
-                print(f"       -> ({suite}, {platform})")
-
         # Apply test name filters
         if test_filters:
             base_bt = [
@@ -691,7 +745,11 @@ Examples:
             )
 
         print(f"\nDownloading {len(video_tasks)} video artifacts...")
-        results = await download_video_artifacts(session, video_tasks, output_dir, max_concurrent)
+        if not args.all_runs:
+            print("  (median run only — use --all-runs to download all)")
+        results = await download_video_artifacts(
+            session, video_tasks, output_dir, max_concurrent, all_runs=args.all_runs
+        )
 
         print("\nDownloaded:")
         print(f"  Base: {len(results['base'])} videos")

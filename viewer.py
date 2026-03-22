@@ -276,27 +276,32 @@ HTML_TEMPLATE = """
                         <input type="checkbox" onchange="toggleSync('{{ key }}', this.checked)" checked>
                         Sync playback
                     </label>
+                    {% if comp.base_videos|length > 1 %}
                     <div class="video-select">
                         <label>Run:</label>
-                        <select onchange="selectRun('{{ key }}', this.value)">
+                        <select onchange="selectRun('{{ key }}', this.value)" id="run-select-{{ key|replace('/', '-') }}">
                             {% for i in range(comp.base_videos|length) %}
-                            <option value="{{ i }}">{{ i + 1 }}</option>
+                            <option value="{{ i }}"
+                                {% if i == comp.base_median_idx %}selected{% endif %}>
+                                Run {{ i + 1 }}{% if i == comp.base_median_idx %} (median){% endif %}
+                            </option>
                             {% endfor %}
                         </select>
                     </div>
+                    {% endif %}
                 </div>
 
                 <div class="video-container">
                     <div class="video-panel base">
                         <h3>Base ({{ base_revision[:12] if base_revision else 'N/A' }})</h3>
                         <video id="base-{{ key|replace('/', '-') }}"
-                               src="/video/{{ comp.base_videos[0]|urlencode }}"
+                               src="/video/{{ comp.base_videos[comp.base_median_idx or 0]|urlencode }}"
                                muted></video>
                     </div>
                     <div class="video-panel new">
                         <h3>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h3>
                         <video id="new-{{ key|replace('/', '-') }}"
-                               src="/video/{{ comp.new_videos[0]|urlencode }}"
+                               src="/video/{{ comp.new_videos[comp.new_median_idx or 0]|urlencode }}"
                                muted></video>
                     </div>
                 </div>
