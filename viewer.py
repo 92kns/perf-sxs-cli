@@ -241,7 +241,7 @@ HTML_TEMPLATE = """
             </div>
             <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #0f3460;">
                 <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
-                    <input type="checkbox" id="auto-play-toggle" onchange="toggleAutoPlay(this.checked)">
+                    <input type="checkbox" id="auto-play-toggle" onchange="toggleAutoPlay(this.checked)" checked>
                     Auto-play on select
                 </label>
             </div>
@@ -338,7 +338,7 @@ HTML_TEMPLATE = """
         const mode = {{ mode|tojson }};
         let syncEnabled = {};
         let currentTest = null;
-        let autoPlayEnabled = false;
+        let autoPlayEnabled = true;
 
         function selectTest(key) {
             const safeKey = key.replace('/', '-');
