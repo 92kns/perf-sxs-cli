@@ -425,11 +425,32 @@ HTML_TEMPLATE = """
             autoPlayEnabled = enabled;
         }
 
+        function fuzzyMatch(str, term) {
+            let si = 0, qi = 0;
+            while (si < str.length && qi < term.length) {
+                if (str[si] === term[qi]) qi++;
+                si++;
+            }
+            return qi === term.length;
+        }
+
+        function matchTerm(str, term) {
+            if (term.startsWith("'")) return str.includes(term.slice(1));
+            return fuzzyMatch(str, term);
+        }
+
+        function matchQuery(str, query) {
+            // `a | b` = OR; space-separated within a group = AND
+            return query.split('|').map(g => g.trim()).filter(Boolean).some(group =>
+                group.split(/\s+/).filter(Boolean).every(term => matchTerm(str, term))
+            );
+        }
+
         function filterTests(query) {
             const q = query.toLowerCase();
             let visible = 0;
             document.querySelectorAll('.test-item').forEach(el => {
-                const match = !q || el.dataset.key.toLowerCase().includes(q);
+                const match = !q || matchQuery(el.dataset.key.toLowerCase(), q);
                 el.style.display = match ? '' : 'none';
                 if (match) visible++;
             });
