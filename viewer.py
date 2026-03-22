@@ -439,10 +439,28 @@ HTML_TEMPLATE = """
             return fuzzyMatch(str, term);
         }
 
+        function parseQuery(query) {
+            // Returns AND conditions, each an OR group of alternatives
+            // e.g. "'firefox 'amazon | 'cnn" → [["'firefox"], ["'amazon", "'cnn"]]
+            const tokens = query.split(/\s+/).filter(Boolean);
+            const conditions = [];
+            let i = 0;
+            while (i < tokens.length) {
+                if (tokens[i] === '|') { i++; continue; }
+                const orGroup = [tokens[i]];
+                while (i + 1 < tokens.length && tokens[i + 1] === '|') {
+                    i += 2;
+                    if (i < tokens.length && tokens[i] !== '|') orGroup.push(tokens[i]);
+                }
+                conditions.push(orGroup);
+                i++;
+            }
+            return conditions;
+        }
+
         function matchQuery(str, query) {
-            // `a | b` = OR; space-separated within a group = AND
-            return query.split('|').map(g => g.trim()).filter(Boolean).some(group =>
-                group.split(/\s+/).filter(Boolean).every(term => matchTerm(str, term))
+            return parseQuery(query).every(orGroup =>
+                orGroup.some(term => matchTerm(str, term))
             );
         }
 
