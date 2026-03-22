@@ -546,6 +546,37 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
     return comparisons
 
 
+def organize_single_revision(output_dir: Path) -> dict:
+    """Organize downloaded videos for single-revision (no-compare) mode."""
+    comparisons: dict[str, dict] = {}
+
+    base_dir = output_dir / "base"
+    if not base_dir.exists():
+        return comparisons
+
+    for platform_dir in base_dir.iterdir():
+        if not platform_dir.is_dir():
+            continue
+        platform = platform_dir.name
+
+        for test_dir in platform_dir.iterdir():
+            if not test_dir.is_dir():
+                continue
+            test_name = test_dir.name
+
+            videos = sorted(test_dir.rglob("*.mp4"))
+            if videos:
+                key = f"{platform}/{test_name}"
+                comparisons[key] = {
+                    "platform": platform,
+                    "test_name": test_name,
+                    "base_videos": [str(v.relative_to(output_dir)) for v in videos],
+                    "base_median_idx": read_median_idx(test_dir),
+                }
+
+    return comparisons
+
+
 async def main():
     parser = argparse.ArgumentParser(
         description="Download and compare browsertime videos from two Try pushes",
@@ -606,6 +637,11 @@ Examples:
         default=None,
     )
     parser.add_argument(
+        "--no-compare",
+        help="Single revision mode: download videos without a comparison target",
+        action="store_true",
+    )
+    parser.add_argument(
         "--port", help="Port for Flask server (default: 3333)", type=int, default=3333
     )
 
@@ -613,17 +649,21 @@ Examples:
 
     print("Parsing revisions...")
     perfcompare_url = None
+    new_push = None
     try:
         if len(args.revisions) == 1:
-            try:
-                base_push, new_push = parse_perfcompare_url(args.revisions[0])
-                perfcompare_url = args.revisions[0]
-                print("  Parsed perfcompare URL")
-            except ValueError:
-                print("Error: Single argument must be a perfcompare URL")
-                print("  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
-                print("  Or provide two separate revisions/URLs")
-                sys.exit(1)
+            if args.no_compare:
+                base_push = parse_try_url(args.revisions[0])
+            else:
+                try:
+                    base_push, new_push = parse_perfcompare_url(args.revisions[0])
+                    perfcompare_url = args.revisions[0]
+                    print("  Parsed perfcompare URL")
+                except ValueError:
+                    print("Error: Single argument must be a perfcompare URL")
+                    print("  Expected: https://perf.compare/compare-results?baseRev=...&newRev=...")
+                    print("  Or provide two separate revisions/URLs, or use --no-compare")
+                    sys.exit(1)
         elif len(args.revisions) == 2:
             base_push = parse_try_url(args.revisions[0])
             new_push = parse_try_url(args.revisions[1])
@@ -637,7 +677,8 @@ Examples:
         sys.exit(1)
 
     print(f"  Base: {base_push.revision[:12]} ({base_push.repo})")
-    print(f"  New:  {new_push.revision[:12]} ({new_push.repo})")
+    if new_push:
+        print(f"  New:  {new_push.revision[:12]} ({new_push.repo})")
 
     # Parse filters
     platforms = args.platforms.split(",") if args.platforms else None
@@ -654,18 +695,26 @@ Examples:
         base_push.task_group_id = await find_task_group_id(
             session, base_push.revision, base_push.repo
         )
-        new_push.task_group_id = await find_task_group_id(session, new_push.revision, new_push.repo)
         print(f"  Base task group: {base_push.task_group_id}")
-        print(f"  New task group:  {new_push.task_group_id}")
+        if new_push:
+            new_push.task_group_id = await find_task_group_id(
+                session, new_push.revision, new_push.repo
+            )
+            print(f"  New task group:  {new_push.task_group_id}")
 
-        # Get tasks in both groups
+        # Get tasks in groups
         print("\nFetching task lists...")
-        base_tasks, new_tasks = await asyncio.gather(
-            get_tasks_in_group(session, base_push.task_group_id),
-            get_tasks_in_group(session, new_push.task_group_id),
-        )
-        print(f"  Base: {len(base_tasks)} total tasks")
-        print(f"  New:  {len(new_tasks)} total tasks")
+        if new_push:
+            base_tasks, new_tasks = await asyncio.gather(
+                get_tasks_in_group(session, base_push.task_group_id),
+                get_tasks_in_group(session, new_push.task_group_id),
+            )
+            print(f"  Base: {len(base_tasks)} total tasks")
+            print(f"  New:  {len(new_tasks)} total tasks")
+        else:
+            base_tasks = await get_tasks_in_group(session, base_push.task_group_id)
+            new_tasks = []
+            print(f"  Base: {len(base_tasks)} total tasks")
 
         high_conf_tests = None
         if args.confidence_json and not args.all_tests:
@@ -693,7 +742,7 @@ Examples:
         # Filter to browsertime video tasks
         print("\nFiltering browsertime tasks...")
         base_bt = filter_browsertime_video_tasks(base_tasks, platforms, high_conf_tests)
-        new_bt = filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests)
+        new_bt = filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests) if new_push else []
 
         # Apply test name filters
         if test_filters:
@@ -709,9 +758,10 @@ Examples:
             ]
 
         print(f"  Base: {len(base_bt)} browsertime tasks")
-        print(f"  New:  {len(new_bt)} browsertime tasks")
+        if new_push:
+            print(f"  New:  {len(new_bt)} browsertime tasks")
 
-        if not base_bt or not new_bt:
+        if not base_bt or (new_push and not new_bt):
             print("\nNo matching browsertime tasks found!")
             sys.exit(1)
 
@@ -755,23 +805,29 @@ Examples:
         print(f"  Base: {len(results['base'])} videos")
         print(f"  New:  {len(results['new'])} videos")
 
-    # Organize for comparison
-    comparisons = organize_videos_for_comparison(output_dir)
+    # Organize videos
+    if new_push:
+        comparisons = organize_videos_for_comparison(output_dir)
+        mode = "compare"
+    else:
+        comparisons = organize_single_revision(output_dir)
+        mode = "single"
 
-    # Save comparison metadata
+    # Save metadata
     meta_path = output_dir / "comparisons.json"
     with open(meta_path, "w") as f:
         json.dump(
             {
+                "mode": mode,
                 "base_revision": base_push.revision,
-                "new_revision": new_push.revision,
+                "new_revision": new_push.revision if new_push else None,
                 "comparisons": comparisons,
             },
             f,
             indent=2,
         )
 
-    print(f"\nFound {len(comparisons)} test/platform combinations for comparison")
+    print(f"\nFound {len(comparisons)} test/platform combinations")
     print(f"Metadata saved to: {meta_path}")
 
     if not args.no_serve:

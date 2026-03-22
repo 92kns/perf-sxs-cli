@@ -18,9 +18,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from perf_sxs import (
     extract_suite_and_platform,
     extract_test_info,
+    find_median_run_index,
     load_high_confidence_from_file,
+    organize_single_revision,
     parse_perfcompare_url,
     parse_try_url,
+    read_median_idx,
 )
 
 
@@ -236,6 +239,99 @@ class TestSuiteNameEdgeCases:
 
         assert suite == ""
         assert platform == ""
+
+
+class TestMedianRunIndex:
+    """Test median run index detection from perfherder-data.json."""
+
+    def _make_data(self, replicates, value=None):
+        if value is None:
+            sorted_reps = sorted(replicates)
+            mid = len(sorted_reps) // 2
+            value = sorted_reps[mid]
+        return {"suites": [{"subtests": [{"replicates": replicates, "value": value}]}]}
+
+    def test_picks_closest_to_median(self):
+        data = self._make_data([100, 200, 150, 300, 250], value=200)
+        assert find_median_run_index(data) == 1  # replicates[1] == 200
+
+    def test_single_replicate_returns_zero(self):
+        data = self._make_data([500], value=500)
+        assert find_median_run_index(data) == 0
+
+    def test_empty_suites_returns_zero(self):
+        assert find_median_run_index({"suites": []}) == 0
+
+    def test_missing_subtests_returns_zero(self):
+        assert find_median_run_index({"suites": [{"subtests": []}]}) == 0
+
+    def test_malformed_data_returns_zero(self):
+        assert find_median_run_index({}) == 0
+        assert find_median_run_index(None) == 0  # type: ignore[arg-type]
+
+    def test_picks_nearest_when_no_exact_match(self):
+        # value=175, closest replicate is 200 (index 1) vs 100 (index 0)
+        data = self._make_data([100, 200, 300], value=175)
+        assert find_median_run_index(data) == 1
+
+
+class TestReadMedianIdx:
+    """Test reading median_idx.txt sidecar files."""
+
+    def test_reads_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = Path(tmpdir)
+            task_dir = test_dir / "task123"
+            task_dir.mkdir()
+            (task_dir / "median_idx.txt").write_text("3")
+            assert read_median_idx(test_dir) == 3
+
+    def test_returns_none_without_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = Path(tmpdir)
+            (test_dir / "task123").mkdir()
+            assert read_median_idx(test_dir) is None
+
+    def test_returns_none_for_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert read_median_idx(Path(tmpdir)) is None
+
+
+class TestOrganizeSingleRevision:
+    """Test single-revision video organization."""
+
+    def _make_video_tree(self, root: Path):
+        video_path = (
+            root / "base" / "test-linux_opt" / "browsertime-tp6-amazon" / "task123"
+        )
+        video_path.mkdir(parents=True)
+        (video_path / "video0.mp4").write_bytes(b"")
+        return video_path
+
+    def test_organizes_base_videos(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._make_video_tree(root)
+            comparisons = organize_single_revision(root)
+
+            assert len(comparisons) == 1
+            key = "test-linux_opt/browsertime-tp6-amazon"
+            assert key in comparisons
+            assert len(comparisons[key]["base_videos"]) == 1
+            assert "new_videos" not in comparisons[key]
+
+    def test_no_base_dir_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert organize_single_revision(Path(tmpdir)) == {}
+
+    def test_includes_median_idx_when_sidecar_present(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            video_path = self._make_video_tree(root)
+            (video_path / "median_idx.txt").write_text("0")
+            comparisons = organize_single_revision(root)
+            key = "test-linux_opt/browsertime-tp6-amazon"
+            assert comparisons[key]["base_median_idx"] == 0
 
 
 # Pytest markers for different test categories

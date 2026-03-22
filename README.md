@@ -54,6 +54,19 @@ uv run python perf_sxs.py \
 uv run python perf_sxs.py "https://perf.compare/compare-results?..." --all-tests
 ```
 
+**Download all runs per test (default is median only):**
+```bash
+uv run python perf_sxs.py "https://perf.compare/compare-results?..." --all-runs
+```
+
+### Single revision (no comparison)
+
+```bash
+uv run python perf_sxs.py 881d2bbfaf536748b4ebdbadeaaa2c9c269f91e8 --no-compare
+```
+
+Useful when you want to inspect videos from a single push without a baseline. The viewer shows a single full-width panel instead of side-by-side.
+
 ### Using two separate revisions
 
 ```bash
@@ -107,6 +120,8 @@ uv run python viewer.py ./videos
 | `--no-serve` | Skip auto-launching viewer after download | false |
 | `--confidence-json` | Path to perfcompare JSON for High confidence filtering | None |
 | `--all-tests` | Download all tests (ignore High confidence filter) | false |
+| `--all-runs` | Download all runs per test (default: median run only) | false |
+| `--no-compare` | Single revision mode — download one revision without a comparison target | false |
 | `--port` | Viewer port | 3333 |
 
 ## Examples
@@ -135,7 +150,7 @@ uv run python perf_sxs.py <base-rev> <new-rev> \
 2. **Find Task Groups** - Queries TaskCluster index API
 3. **Load Confidence Data** - If `--confidence-json` provided, loads high confidence test/platform pairs from local JSON
 4. **Filter Tasks** - Finds completed browsertime tests, filters by confidence (if applicable), deduplicates by test/platform
-5. **Download Videos** - Async downloads of annotated videos with `aiohttp` (configurable concurrency)
+5. **Download Videos** - Async downloads of annotated videos with `aiohttp` (configurable concurrency). Downloads `perfherder-data.json` per task to identify the median run; keeps only that video by default (`--all-runs` to keep all)
 6. **Extract & Organize** - Extracts tar.gz archives, organizes by base/new
 7. **Generate Metadata** - Creates `comparisons.json` for viewer
 8. **Launch Viewer** - Auto-opens browser to side-by-side comparison view
@@ -143,9 +158,10 @@ uv run python perf_sxs.py <base-rev> <new-rev> \
 ## Viewer Features
 
 - **Side-by-side playback** - Synchronized base vs new videos
+- **Single revision mode** - Full-width single panel when using `--no-compare`
 - **Playback controls** - Play/pause/restart both videos together
 - **Speed adjustment** - 0.25x to 2x playback speed
-- **Run selection** - Switch between different test runs
+- **Run selection** - Switch between runs when using `--all-runs`; median run labeled and selected by default
 - **Sync toggle** - Option to disable synchronized playback
 
 ## Output Structure

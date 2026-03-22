@@ -212,7 +212,9 @@ HTML_TEMPLATE = """
         <h1>Perf Side-by-Side Viewer</h1>
         <div class="revision-info">
             <div>Base: <span id="base-rev">{{ base_revision[:12] if base_revision else 'N/A' }}</span></div>
+            {% if mode != 'single' %}
             <div>New: <span id="new-rev">{{ new_revision[:12] if new_revision else 'N/A' }}</span></div>
+            {% endif %}
         </div>
     </header>
 
@@ -291,19 +293,21 @@ HTML_TEMPLATE = """
                     {% endif %}
                 </div>
 
-                <div class="video-container">
+                <div class="video-container" style="{{ 'grid-template-columns: 1fr;' if mode == 'single' else '' }}">
                     <div class="video-panel base">
-                        <h3>Base ({{ base_revision[:12] if base_revision else 'N/A' }})</h3>
+                        <h3>{{ base_revision[:12] if base_revision else 'N/A' }}</h3>
                         <video id="base-{{ key|replace('/', '-') }}"
                                src="/video/{{ comp.base_videos[comp.base_median_idx or 0]|urlencode }}"
                                muted></video>
                     </div>
+                    {% if mode != 'single' %}
                     <div class="video-panel new">
                         <h3>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h3>
                         <video id="new-{{ key|replace('/', '-') }}"
                                src="/video/{{ comp.new_videos[comp.new_median_idx or 0]|urlencode }}"
                                muted></video>
                     </div>
+                    {% endif %}
                 </div>
             </div>
             {% endfor %}
@@ -313,6 +317,7 @@ HTML_TEMPLATE = """
 
     <script>
         const comparisons = {{ comparisons_json|safe }};
+        const mode = {{ mode|tojson }};
         let syncEnabled = {};
         let currentTest = null;
         let autoPlayEnabled = false;
@@ -342,21 +347,20 @@ HTML_TEMPLATE = """
             const baseVideo = document.getElementById(`base-${safeKey}`);
             const newVideo = document.getElementById(`new-${safeKey}`);
 
-            if (syncEnabled[key] !== false) {
-                // Sync start times
+            if (newVideo && syncEnabled[key] !== false) {
                 const startTime = Math.max(baseVideo.currentTime, newVideo.currentTime);
                 baseVideo.currentTime = startTime;
                 newVideo.currentTime = startTime;
             }
 
             baseVideo.play();
-            newVideo.play();
+            if (newVideo) newVideo.play();
         }
 
         function pauseBoth(key) {
             const safeKey = key.replace('/', '-');
             document.getElementById(`base-${safeKey}`).pause();
-            document.getElementById(`new-${safeKey}`).pause();
+            document.getElementById(`new-${safeKey}`)?.pause();
         }
 
         function restartBoth(key) {
@@ -365,15 +369,15 @@ HTML_TEMPLATE = """
             const newVideo = document.getElementById(`new-${safeKey}`);
 
             baseVideo.currentTime = 0;
-            newVideo.currentTime = 0;
             baseVideo.play();
-            newVideo.play();
+            if (newVideo) { newVideo.currentTime = 0; newVideo.play(); }
         }
 
         function setSpeed(key, speed) {
             const safeKey = key.replace('/', '-');
             document.getElementById(`base-${safeKey}`).playbackRate = speed;
-            document.getElementById(`new-${safeKey}`).playbackRate = speed;
+            const newVideo = document.getElementById(`new-${safeKey}`);
+            if (newVideo) newVideo.playbackRate = speed;
             document.getElementById(`speed-${safeKey}`).textContent = speed + 'x';
         }
 
@@ -388,8 +392,9 @@ HTML_TEMPLATE = """
             if (comp.base_videos[index]) {
                 document.getElementById(`base-${safeKey}`).src = '/video/' + encodeURIComponent(comp.base_videos[index]);
             }
-            if (comp.new_videos[index]) {
-                document.getElementById(`new-${safeKey}`).src = '/video/' + encodeURIComponent(comp.new_videos[index]);
+            const newVideo = document.getElementById(`new-${safeKey}`);
+            if (newVideo && comp.new_videos && comp.new_videos[index]) {
+                newVideo.src = '/video/' + encodeURIComponent(comp.new_videos[index]);
             }
         }
 
@@ -430,6 +435,7 @@ def create_app(video_dir: Path) -> Flask:
     def index():
         return render_template_string(
             HTML_TEMPLATE,
+            mode=metadata.get("mode", "compare"),
             base_revision=metadata.get("base_revision"),
             new_revision=metadata.get("new_revision"),
             comparisons=metadata.get("comparisons", {}),
