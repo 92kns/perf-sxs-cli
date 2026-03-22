@@ -63,6 +63,21 @@ HTML_TEMPLATE = """
             color: #666;
             letter-spacing: 0.05em;
         }
+        .sidebar-search {
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #0f3460;
+        }
+        .sidebar-search input {
+            width: 100%;
+            background: #0f3460;
+            border: none;
+            color: #eee;
+            padding: 0.4rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        .sidebar-search input::placeholder { color: #555; }
+        .sidebar-search input:focus { outline: 1px solid #4ecca3; }
         .platform-section {
             margin-bottom: 1.5rem;
         }
@@ -220,7 +235,10 @@ HTML_TEMPLATE = """
 
     <div class="container">
         <div class="sidebar">
-            <h2>Tests ({{ comparisons|length }})</h2>
+            <h2>Tests (<span id="test-count">{{ comparisons|length }}</span>)</h2>
+            <div class="sidebar-search">
+                <input type="text" id="test-search" placeholder="Filter tests..." oninput="filterTests(this.value)">
+            </div>
             <div style="padding: 0.5rem 1rem; border-bottom: 1px solid #0f3460;">
                 <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
                     <input type="checkbox" id="auto-play-toggle" onchange="toggleAutoPlay(this.checked)">
@@ -405,6 +423,26 @@ HTML_TEMPLATE = """
 
         function toggleAutoPlay(enabled) {
             autoPlayEnabled = enabled;
+        }
+
+        function filterTests(query) {
+            const q = query.toLowerCase();
+            let visible = 0;
+            document.querySelectorAll('.test-item').forEach(el => {
+                const match = !q || el.dataset.key.toLowerCase().includes(q);
+                el.style.display = match ? '' : 'none';
+                if (match) visible++;
+            });
+            // Show/hide platform sections based on whether any children are visible
+            document.querySelectorAll('.platform-section').forEach(section => {
+                const anyVisible = [...section.querySelectorAll('.test-item')]
+                    .some(el => el.style.display !== 'none');
+                section.style.display = anyVisible ? '' : 'none';
+                if (anyVisible && q) section.classList.remove('collapsed');
+            });
+            document.getElementById('test-count').textContent = q
+                ? `${visible}/{{ comparisons|length }}`
+                : '{{ comparisons|length }}';
         }
 
         // Select first test by default

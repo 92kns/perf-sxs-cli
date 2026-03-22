@@ -877,6 +877,19 @@ Examples:
         print(f"  Base: {len(results['base'])} videos")
         print(f"  New:  {len(results['new'])} videos")
 
+        # Report tasks where no video was downloaded
+        downloaded_base_ids = {p.parts[p.parts.index("base") + 2] for p in results["base"] if "base" in p.parts}
+        downloaded_new_ids = {p.parts[p.parts.index("new") + 2] for p in results["new"] if "new" in p.parts}
+        missing = []
+        for vt in video_tasks:
+            downloaded = downloaded_base_ids if vt.label == "base" else downloaded_new_ids
+            if vt.test_name not in downloaded:
+                missing.append(vt)
+        if missing:
+            print(f"\n  Missing video artifacts ({len(missing)} tasks):")
+            for vt in missing:
+                print(f"    [{vt.label}] {vt.platform} / {vt.test_name}")
+
     # Organize videos
     if new_push:
         comparisons = organize_videos_for_comparison(output_dir)
