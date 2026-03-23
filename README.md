@@ -227,6 +227,9 @@ uv run python analyze.py ./sxs_videos
 
 # Filter to specific tests
 uv run python analyze.py ./sxs_videos --tests amazon,cnn
+
+# Run comparisons in parallel (faster, default concurrency=5)
+uv run python analyze.py ./sxs_videos --concurrency 10
 ```
 
 ### Viewing analysis results
@@ -247,9 +250,17 @@ The viewer automatically shows an analysis panel below each video pair if `analy
 - Verify test names contain "browsertime"
 - Check platform filters match exactly
 
+**Re-running overwrites existing downloads**
+- The output directory is wiped on each run (3-second cancellation window shown)
+- Use `--output ./new_dir` to keep previous downloads alongside a new run
+
 **Viewer shows no comparisons**
 - Ensure both base and new have the same test/platform combinations
 - Check `comparisons.json` for matched pairs
+
+**Viewer shows ⚠ warning on a test**
+- Base and new videos resolved to the same task ID — you may be comparing a video against itself
+- Re-download with the current version to get genuinely different tasks
 
 **Download errors**
 - Increase timeout or reduce `--max-downloads`
