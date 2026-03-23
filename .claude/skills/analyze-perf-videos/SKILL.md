@@ -2,6 +2,8 @@
 name: analyze-perf-videos
 description: Analyze base vs new browsertime video comparisons for visual regressions. Use when asked to analyze performance videos, check for visual regressions, or compare video recordings.
 allowed-tools: Bash, Read, Write, Glob
+context: fork
+argument-hint: "[video_dir] [test_filters]"
 ---
 
 Analyze browsertime video comparisons for visual regressions and write findings to `analysis.json`.
