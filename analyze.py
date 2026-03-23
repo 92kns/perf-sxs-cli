@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import base64
 import json
 import re
@@ -152,8 +153,8 @@ def encode_image(path: Path) -> str:
     return base64.standard_b64encode(path.read_bytes()).decode("utf-8")
 
 
-def analyze_pair(
-    client: anthropic.Anthropic,
+async def analyze_pair(
+    client: anthropic.AsyncAnthropic,
     base_frames: list[Path],
     new_frames: list[Path],
     model: str,
@@ -182,7 +183,7 @@ def analyze_pair(
                 }
             )
 
-    response = client.messages.create(
+    response = await client.messages.create(
         model=model,
         max_tokens=1024,
         system=ANALYSIS_PROMPT,
@@ -361,13 +362,7 @@ a {{ color: #4ecca3; }}
 </html>"""
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Analyze perf-sxs video comparisons")
-    parser.add_argument("video_dir", nargs="?", default="./sxs_videos")
-    parser.add_argument("--tests", "-t", help="Comma-separated test name filters", default=None)
-    parser.add_argument("--model", default="claude-opus-4-6", help="Claude model to use")
-    args = parser.parse_args()
-
+async def _run(args: argparse.Namespace) -> None:
     check_ffmpeg()
 
     video_dir = Path(args.video_dir)
@@ -390,22 +385,20 @@ def main() -> None:
         print("No comparisons to analyze.")
         sys.exit(0)
 
-    print(f"Analyzing {len(comparisons)} comparison(s) in {video_dir}")
+    total = len(comparisons)
+    print(f"Analyzing {total} comparison(s) in {video_dir} (concurrency={args.concurrency})")
     print(f"Model: {args.model}\n")
 
-    client = anthropic.Anthropic()
+    client = anthropic.AsyncAnthropic()
+    semaphore = asyncio.Semaphore(args.concurrency)
     results: dict[str, dict] = {}
     base_last_frames: dict[str, Path] = {}
     new_last_frames: dict[str, Path] = {}
+    completed = 0
 
-    with tempfile.TemporaryDirectory(prefix="perf_analysis_") as tmp:
-        tmp_path = Path(tmp)
-
-        for i, (key, comp) in enumerate(comparisons.items(), 1):
-            print(f"[{i}/{len(comparisons)}] {key}...")
-            safe_key = key.replace("/", "_")
-            frame_dir = tmp_path / safe_key
-
+    async def analyze_one(key: str, comp: dict, frame_dir: Path) -> None:
+        nonlocal completed
+        async with semaphore:
             try:
                 base_idx = comp.get("base_median_idx") or 0
                 base_video = video_dir / comp["base_videos"][base_idx]
@@ -422,25 +415,26 @@ def main() -> None:
                     new_last = extract_last_frame(new_video, frame_dir / "new_last.jpg")
                     new_last_frames[key] = new_last
 
-                # PSNR/SSIM on final frames only (avoids timing-offset false positives)
                 psnr, ssim = None, None
                 if new_last and base_last.exists() and new_last.exists():
                     psnr, ssim = compute_psnr_ssim(base_last, new_last)
 
-                result = analyze_pair(client, base_frames, new_frames, args.model)
+                result = await analyze_pair(client, base_frames, new_frames, args.model)
                 result["psnr"] = psnr
                 result["ssim"] = ssim
                 results[key] = result
 
+                completed += 1
                 regression_str = {True: "REGRESSION", False: "ok", None: "?"}
                 psnr_str = f"PSNR={psnr:.1f}dB" if psnr is not None else "PSNR=identical"
                 print(
-                    f"  {regression_str.get(result.get('regression'), '?')} "
-                    f"[{result.get('severity', '?')}] {psnr_str} — {result.get('summary', '')}"
+                    f"  [{completed}/{total}] {regression_str.get(result.get('regression'), '?')} "
+                    f"[{result.get('severity', '?')}] {psnr_str} — {key.split('/')[-1]}"
                 )
 
             except Exception as e:
-                print(f"  Error: {e}")
+                completed += 1
+                print(f"  [{completed}/{total}] Error: {key} — {e}")
                 results[key] = {
                     "summary": f"Analysis failed: {e}",
                     "regression": None,
@@ -450,25 +444,32 @@ def main() -> None:
                     "ssim": None,
                 }
 
-        generated_at = datetime.now(UTC).isoformat()
-
-        # Write analysis.json (for viewer)
-        analysis = {
-            "generated_at": generated_at,
-            "model": args.model,
-            "comparisons": results,
-        }
-        json_path = video_dir / "analysis.json"
-        with open(json_path, "w") as f:
-            json.dump(analysis, f, indent=2)
-
-        # Write HTML report (for sharing)
-        html = generate_html_report(
-            results, metadata, generated_at, args.model, base_last_frames, new_last_frames
+    with tempfile.TemporaryDirectory(prefix="perf_analysis_") as tmp:
+        tmp_path = Path(tmp)
+        await asyncio.gather(
+            *[
+                analyze_one(key, comp, tmp_path / key.replace("/", "_"))
+                for key, comp in comparisons.items()
+            ]
         )
-        html_path = video_dir / "analysis_report.html"
-        with open(html_path, "w") as f:
-            f.write(html)
+
+    generated_at = datetime.now(UTC).isoformat()
+    json_path = video_dir / "analysis.json"
+    html_path = video_dir / "analysis_report.html"
+
+    analysis = {
+        "generated_at": generated_at,
+        "model": args.model,
+        "comparisons": results,
+    }
+    with open(json_path, "w") as f:
+        json.dump(analysis, f, indent=2)
+
+    html = generate_html_report(
+        results, metadata, generated_at, args.model, base_last_frames, new_last_frames
+    )
+    with open(html_path, "w") as f:
+        f.write(html)
 
     regressions = [v for v in results.values() if v.get("regression") is True]
     high = sum(1 for v in regressions if v.get("severity") == "high")
@@ -482,6 +483,22 @@ def main() -> None:
     print(f"JSON:   {json_path}")
     print(f"Report: {html_path}")
     print("Refresh the viewer to see the analysis panel.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Analyze perf-sxs video comparisons")
+    parser.add_argument("video_dir", nargs="?", default="./sxs_videos")
+    parser.add_argument("--tests", "-t", help="Comma-separated test name filters", default=None)
+    parser.add_argument("--model", default="claude-opus-4-6", help="Claude model to use")
+    parser.add_argument(
+        "--concurrency",
+        "-c",
+        type=int,
+        default=5,
+        help="Max concurrent API calls (default: 5)",
+    )
+    args = parser.parse_args()
+    asyncio.run(_run(args))
 
 
 if __name__ == "__main__":
