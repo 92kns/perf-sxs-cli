@@ -57,6 +57,9 @@ comparisons.json
 .coverage
 htmlcov/
 
+# Claude Code local settings (personal permission grants, not project config)
+.claude/settings.local.json
+
 # Temporary files
 *.tmp
 tmp/
