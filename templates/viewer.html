@@ -196,6 +196,48 @@
             padding: 0.5rem;
             border-radius: 4px;
         }
+        .analysis-panel {
+            background: #16213e;
+            border-radius: 8px;
+            margin-top: 1rem;
+            border-left: 3px solid #4ecca3;
+            overflow: hidden;
+        }
+        .analysis-panel.regression { border-left-color: #e94560; }
+        .analysis-panel.regression-medium { border-left-color: #f0a500; }
+        .analysis-header {
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            user-select: none;
+            font-size: 0.9rem;
+        }
+        .analysis-header:hover { background: #1a1a2e; }
+        .analysis-badge {
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 3px;
+            background: #0f3460;
+        }
+        .analysis-badge.high { background: #e94560; }
+        .analysis-badge.medium { background: #f0a500; color: #000; }
+        .analysis-badge.low { background: #4ecca3; color: #000; }
+        .analysis-badge.none { background: #0f3460; }
+        .analysis-body {
+            padding: 0.75rem 1rem;
+            border-top: 1px solid #0f3460;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+        .analysis-body ul {
+            margin-top: 0.5rem;
+            padding-left: 1.25rem;
+            color: #aaa;
+        }
+        .analysis-body ul li { margin-bottom: 0.25rem; }
+        .analysis-collapsed .analysis-body { display: none; }
         .empty-state {
             text-align: center;
             padding: 4rem 2rem;
@@ -243,7 +285,7 @@
                 <div class="test-list">
                     {% for key, comp in platforms[platform] %}
                     <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
-                        <div class="name">{{ comp.test_name }}</div>
+                        <div class="name">{{ comp.test_name }}{% if comp.same_task_warning %} <span title="Base and new use the same task — comparison may not be meaningful" style="color:#f0a500;font-size:0.75rem">⚠</span>{% endif %}</div>
                     </div>
                     {% endfor %}
                 </div>
@@ -264,6 +306,11 @@
 
             {% for key, comp in comparisons.items() %}
             <div class="comparison-view" id="view-{{ key|replace('/', '-') }}">
+                {% if comp.same_task_warning %}
+                <div style="background:#2a1f00;border-left:3px solid #f0a500;padding:0.5rem 1rem;font-size:0.82rem;color:#f0a500">
+                    ⚠ Base and new use the same task ID — you may be comparing a video against itself. Re-download with the current version for a meaningful comparison.
+                </div>
+                {% endif %}
                 <div class="controls">
                     <button onclick="playBoth('{{ key }}')" id="play-btn-{{ key|replace('/', '-') }}">Play Both</button>
                     <button onclick="pauseBoth('{{ key }}')">Pause</button>
@@ -309,6 +356,32 @@
                     </div>
                     {% endif %}
                 </div>
+
+                {% set a = analysis.get(key) %}
+                {% if a %}
+                {% set severity = a.get('severity', 'none') %}
+                {% set is_regression = a.get('regression') == true %}
+                <div class="analysis-panel {% if is_regression and severity == 'high' %}regression{% elif is_regression and severity == 'medium' %}regression-medium{% endif %} analysis-collapsed"
+                     id="analysis-{{ key|replace('/', '-') }}">
+                    <div class="analysis-header" onclick="toggleAnalysis('{{ key }}')">
+                        <span>&#128200; Analysis: {{ a.get('summary', '') }}</span>
+                        <span class="analysis-badge {{ severity }}">
+                            {% if a.get('regression') == true %}regression{% elif a.get('regression') == false %}no regression{% else %}?{% endif %}
+                            &middot; {{ severity }}
+                        </span>
+                    </div>
+                    <div class="analysis-body">
+                        {% if a.get('observations') %}
+                        <ul>
+                            {% for obs in a.observations %}
+                            <li>{{ obs }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
             </div>
             {% endfor %}
             {% endif %}
@@ -318,6 +391,7 @@
     <script src="{{ url_for('static', filename='fuse.min.js') }}"></script>
     <script>
         const comparisons = {{ comparisons_json|safe }};
+        const analysis = {{ analysis_json|safe }};
         const mode = {{ mode|tojson }};
         let syncEnabled = {};
         let currentTest = null;
@@ -406,6 +480,11 @@
 
         function toggleAutoPlay(enabled) {
             autoPlayEnabled = enabled;
+        }
+
+        function toggleAnalysis(key) {
+            const panel = document.getElementById(`analysis-${key.replace('/', '-')}`);
+            if (panel) panel.classList.toggle('analysis-collapsed');
         }
 
         const fuseItems = Object.keys(comparisons).map(key => ({ key }));

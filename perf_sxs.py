@@ -27,9 +27,11 @@ import argparse
 import asyncio
 import json
 import re
+import shutil
 import sys
 import tarfile
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
@@ -575,6 +577,9 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
 
             if base_videos and new_videos:
                 key = f"{platform}/{test_name}"
+                base_task_ids = {d.name for d in test_dir.iterdir() if d.is_dir()}
+                new_task_ids = {d.name for d in new_test_dir.iterdir() if d.is_dir()}
+                same_task = bool(base_task_ids & new_task_ids)
                 comparisons[key] = {
                     "platform": platform,
                     "test_name": test_name,
@@ -582,6 +587,7 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
                     "new_videos": [str(v.relative_to(output_dir)) for v in new_videos],
                     "base_median_idx": read_median_idx(test_dir),
                     "new_median_idx": read_median_idx(new_test_dir),
+                    "same_task_warning": same_task,
                 }
 
     return comparisons
@@ -738,6 +744,12 @@ Examples:
     test_filters = args.tests.split(",") if args.tests else None
 
     output_dir = Path(args.output)
+    if output_dir.exists() and any(output_dir.iterdir()):
+        print(f"\nOutput directory {output_dir} already exists and will be wiped.")
+        print("Press Ctrl-C to cancel, or wait 3 seconds to continue...")
+        time.sleep(3)
+        shutil.rmtree(output_dir)
+        print(f"  Cleared {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     max_concurrent = args.max_downloads

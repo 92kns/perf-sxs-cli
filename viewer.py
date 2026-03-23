@@ -29,8 +29,16 @@ def create_app(video_dir: Path) -> Flask:
     else:
         metadata = {"base_revision": None, "new_revision": None, "comparisons": {}}
 
+    def load_analysis() -> dict:
+        analysis_path = video_dir / "analysis.json"
+        if analysis_path.exists():
+            with open(analysis_path) as f:
+                return json.load(f)
+        return {}
+
     @app.route("/")
     def index():
+        analysis = load_analysis()
         return render_template(
             "viewer.html",
             mode=metadata.get("mode", "compare"),
@@ -38,7 +46,13 @@ def create_app(video_dir: Path) -> Flask:
             new_revision=metadata.get("new_revision"),
             comparisons=metadata.get("comparisons", {}),
             comparisons_json=json.dumps(metadata.get("comparisons", {})),
+            analysis=analysis.get("comparisons", {}),
+            analysis_json=json.dumps(analysis.get("comparisons", {})),
         )
+
+    @app.route("/api/analysis")
+    def api_analysis():
+        return jsonify(load_analysis())
 
     @app.route("/video/<path:video_path>")
     def serve_video(video_path):

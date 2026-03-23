@@ -194,6 +194,45 @@ output_dir/
 
 The viewer loads from `templates/viewer.html` and serves `static/fuse.min.js` — both are included in the repo alongside `viewer.py`.
 
+## Video Analysis
+
+After downloading videos, you can analyze them for visual regressions.
+
+### Using the Claude Code skill (recommended for Mozilla engineers)
+
+If you have Claude Code set up, the skill ships with the repo — no extra setup needed:
+
+```
+/analyze-perf-videos
+```
+
+Or with a specific directory or test filters:
+
+```
+/analyze-perf-videos ./sxs_videos amazon,cnn
+```
+
+Claude will extract frames from each base/new video pair, analyze them visually, and write `analysis.json` to your video directory. Refresh the viewer to see the analysis panel appear below each comparison.
+
+### Using analyze.py (standalone, no Claude Code required)
+
+Requires `ffmpeg` and an `ANTHROPIC_API_KEY`:
+
+```bash
+# Install the analyze extra
+uv sync --extra analyze
+
+# Run analysis
+uv run python analyze.py ./sxs_videos
+
+# Filter to specific tests
+uv run python analyze.py ./sxs_videos --tests amazon,cnn
+```
+
+### Viewing analysis results
+
+The viewer automatically shows an analysis panel below each video pair if `analysis.json` exists. The panel is collapsed by default — click to expand. Regressions are color-coded (red = high, orange = medium, green = none).
+
 ## Performance
 
 - **Async downloads** - Uses `aiohttp` for true async I/O
