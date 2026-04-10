@@ -196,6 +196,62 @@
             padding: 0.5rem;
             border-radius: 4px;
         }
+        .images-panel {
+            background: #16213e;
+            border-radius: 8px;
+            margin-top: 1rem;
+            border-left: 3px solid #7a5af8;
+            overflow: hidden;
+        }
+        .images-header {
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            user-select: none;
+            font-size: 0.9rem;
+            color: #c4b5fd;
+        }
+        .images-header:hover { background: #1a1a2e; }
+        .images-header .toggle-icon { font-size: 0.7rem; transition: transform 0.2s; }
+        .images-collapsed .images-header .toggle-icon { transform: rotate(-90deg); }
+        .images-body {
+            border-top: 1px solid #0f3460;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            padding: 1rem;
+        }
+        .images-collapsed .images-body { display: none; }
+        .image-panel {
+            background: #0f3460;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .image-panel h4 {
+            padding: 0.5rem 0.75rem;
+            font-size: 0.85rem;
+            font-weight: 500;
+            border-bottom: 1px solid #16213e;
+        }
+        .image-panel.base h4 { color: #4ecca3; }
+        .image-panel.new h4 { color: #e94560; }
+        .image-gallery {
+            padding: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .image-gallery img {
+            width: 100%;
+            display: block;
+            border-radius: 3px;
+            cursor: zoom-in;
+        }
+        .image-gallery img:hover { opacity: 0.9; }
         .analysis-panel {
             background: #16213e;
             border-radius: 8px;
@@ -340,6 +396,7 @@
                     {% endif %}
                 </div>
 
+                {% if comp.base_videos %}
                 <div class="video-container" style="{{ 'grid-template-columns: 1fr;' if mode == 'single' else '' }}">
                     <div class="video-panel base">
                         <h3>{{ base_revision[:12] if base_revision else 'N/A' }}</h3>
@@ -347,7 +404,7 @@
                                src="/video/{{ comp.base_videos[comp.base_median_idx or 0]|urlencode }}"
                                muted></video>
                     </div>
-                    {% if mode != 'single' %}
+                    {% if mode != 'single' and comp.new_videos %}
                     <div class="video-panel new">
                         <h3>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h3>
                         <video id="new-{{ key|replace('/', '-') }}"
@@ -356,6 +413,42 @@
                     </div>
                     {% endif %}
                 </div>
+                {% endif %}
+
+                {% if comp.base_images or comp.new_images %}
+                <div class="images-panel images-collapsed" id="images-{{ key|replace('/', '-') }}">
+                    <div class="images-header" onclick="toggleImages('{{ key }}')">
+                        <span>Screenshots ({{ [comp.base_images|default([])|length, comp.new_images|default([])|length]|max }})</span>
+                        <span class="toggle-icon">▼</span>
+                    </div>
+                    <div class="images-body">
+                        <div class="image-panel base">
+                            <h4>{{ base_revision[:12] if base_revision else 'N/A' }}</h4>
+                            <div class="image-gallery">
+                                {% for img in comp.base_images %}
+                                <img src="/video/{{ img|urlencode }}" alt="base screenshot {{ loop.index }}"
+                                     onclick="openFullscreen(this)">
+                                {% else %}
+                                <p style="color:#555;padding:0.5rem;font-size:0.8rem">No screenshots</p>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% if mode != 'single' %}
+                        <div class="image-panel new">
+                            <h4>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h4>
+                            <div class="image-gallery">
+                                {% for img in comp.new_images %}
+                                <img src="/video/{{ img|urlencode }}" alt="new screenshot {{ loop.index }}"
+                                     onclick="openFullscreen(this)">
+                                {% else %}
+                                <p style="color:#555;padding:0.5rem;font-size:0.8rem">No screenshots</p>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
 
                 {% set a = analysis.get(key) %}
                 {% if a %}
@@ -410,6 +503,10 @@
             document.getElementById(`view-${safeKey}`).classList.add('active');
 
             currentTest = key;
+
+            // Auto-expand images panel if present
+            const imagesPanel = document.getElementById(`images-${safeKey}`);
+            if (imagesPanel) imagesPanel.classList.remove('images-collapsed');
 
             // Auto-play if enabled
             if (autoPlayEnabled) {
@@ -485,6 +582,22 @@
         function toggleAnalysis(key) {
             const panel = document.getElementById(`analysis-${key.replace('/', '-')}`);
             if (panel) panel.classList.toggle('analysis-collapsed');
+        }
+
+        function toggleImages(key) {
+            const panel = document.getElementById(`images-${key.replace('/', '-')}`);
+            if (panel) panel.classList.toggle('images-collapsed');
+        }
+
+        function openFullscreen(img) {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+            const clone = document.createElement('img');
+            clone.src = img.src;
+            clone.style.cssText = 'max-width:95vw;max-height:95vh;object-fit:contain';
+            overlay.appendChild(clone);
+            overlay.onclick = () => overlay.remove();
+            document.body.appendChild(overlay);
         }
 
         const fuseItems = Object.keys(comparisons).map(key => ({ key }));

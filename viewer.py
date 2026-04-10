@@ -65,7 +65,7 @@ def create_app(video_dir: Path) -> Flask:
                 return "Access denied", 403
 
             if full_path.exists() and full_path.is_file():
-                return send_file(full_path, mimetype="video/mp4")
+                return send_file(full_path)
             return "Video not found", 404
         except (ValueError, OSError):
             return "Invalid path", 400

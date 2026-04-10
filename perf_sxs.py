@@ -33,6 +33,7 @@ import tarfile
 import threading
 import time
 import webbrowser
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -50,7 +51,7 @@ MAX_CONCURRENT_DOWNLOADS = 10
 class TryPush:
     revision: str
     repo: str = "try"
-    task_group_id: str | None = None
+    task_group_ids: list[str] | None = None
 
 
 @dataclass
@@ -60,6 +61,7 @@ class VideoTask:
     platform: str
     label: str  # "base" or "new"
     revision: str
+    task_type: str = "browsertime"  # "browsertime" or "perftest"
 
 
 LANDO_API = "https://api.lando.services.mozilla.com"
@@ -238,24 +240,37 @@ async def fetch_perfcompare_data_from_treeherder(
         return set()
 
 
-async def find_task_group_id(session: aiohttp.ClientSession, revision: str, repo: str) -> str:
-    """Find the task group ID for a revision."""
+async def find_task_group_ids(
+    session: aiohttp.ClientSession, revision: str, repo: str
+) -> list[str]:
+    """Find all task group IDs for a revision.
+
+    A revision can have multiple task groups (e.g. main CI + perf push on mozilla-central).
+    We page through all indexed tasks and collect every unique group ID.
+    """
     index_url = f"{TASKCLUSTER_INDEX}/tasks/gecko.v2.{repo}.revision.{revision}.taskgraph"
     print(f"  Fetching task index for {revision[:12]}...")
 
     data = await fetch_json(session, index_url)
-    if not data.get("tasks"):
+    indexed_tasks = data.get("tasks", [])
+    if not indexed_tasks:
         raise Exception(f"No tasks found for revision {revision}")
 
-    task_id = data["tasks"][0]["taskId"]
-    task_url = f"{TASKCLUSTER_QUEUE}/task/{task_id}"
-    task_data = await fetch_json(session, task_url)
+    seen: set[str] = set()
+    group_ids: list[str] = []
+    for entry in indexed_tasks:
+        task_id = entry["taskId"]
+        task_data = await fetch_json(session, f"{TASKCLUSTER_QUEUE}/task/{task_id}")
+        gid = task_data["taskGroupId"]
+        if gid not in seen:
+            seen.add(gid)
+            group_ids.append(gid)
 
-    return task_data["taskGroupId"]
+    return group_ids
 
 
-async def get_tasks_in_group(session: aiohttp.ClientSession, task_group_id: str) -> list:
-    """Get all tasks in a task group."""
+async def _get_tasks_in_group(session: aiohttp.ClientSession, task_group_id: str) -> list:
+    """Get all tasks in a single task group."""
     tasks = []
     continuation_token = None
 
@@ -274,8 +289,24 @@ async def get_tasks_in_group(session: aiohttp.ClientSession, task_group_id: str)
     return tasks
 
 
+async def get_tasks_for_revision(session: aiohttp.ClientSession, group_ids: list[str]) -> list:
+    """Aggregate tasks from all task groups, deduplicating by task ID."""
+    results = await asyncio.gather(*[_get_tasks_in_group(session, gid) for gid in group_ids])
+    seen: set[str] = set()
+    all_tasks: list = []
+    for task_list in results:
+        for task in task_list:
+            task_id = task.get("status", {}).get("taskId", "")
+            if task_id and task_id not in seen:
+                seen.add(task_id)
+                all_tasks.append(task)
+    return all_tasks
+
+
 def extract_test_info(task_name: str) -> tuple[str, str]:
     """Extract test name and platform from task name."""
+    if task_name.startswith("perftest-"):
+        return _extract_test_info_perftest(task_name)
     # Task names look like: test-linux1804-64-shippable-qr/opt-browsertime-tp6-firefox-amazon-e10s
     parts = task_name.split("-browsertime-")
     if len(parts) == 2:
@@ -286,6 +317,31 @@ def extract_test_info(task_name: str) -> tuple[str, str]:
     return task_name, "unknown"
 
 
+def _extract_test_info_perftest(task_name: str) -> tuple[str, str]:
+    """Extract test name and platform from a perftest task name.
+
+    Handles:
+      perftest-android-hw-a55-aarch64-shippable/opt-startup-fenix-homeview-startup
+      perftest-android-hw-a55-aarch64-shippable-startup-fenix-homeview-startup
+    """
+    if "/" in task_name:
+        platform_raw, rest = task_name.split("/", 1)
+        platform = platform_raw.replace("/", "_")
+        test_name = re.sub(r"^(opt|debug|shippable)[_-]", "", rest)
+        return test_name, platform
+
+    # Flat format: split on known platform-terminating suffix
+    name = task_name
+    for suffix in ("-shippable-", "-opt-", "-debug-"):
+        idx = name.rfind(suffix)
+        if idx != -1:
+            platform = name[: idx + len(suffix) - 1]
+            test_name = name[idx + len(suffix) :]
+            return test_name, platform
+
+    return task_name, "unknown"
+
+
 def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
     """
     Extract suite name and platform for perfcompare matching.
@@ -293,6 +349,12 @@ def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
     Task name: test-linux1804-64-shippable-qr/opt-browsertime-tp6-firefox-amazon-e10s
     Returns: ("amazon", "linux1804-64-shippable-qr")
     """
+    if task_name.startswith("perftest-"):
+        test_name, platform = _extract_test_info_perftest(task_name)
+        # Strip perftest- prefix from platform for Treeherder matching
+        platform_clean = re.sub(r"^perftest-", "", platform)
+        return test_name, platform_clean
+
     parts = task_name.split("-browsertime-")
     if len(parts) != 2:
         return "", ""
@@ -326,18 +388,40 @@ def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
     return "", ""
 
 
-def filter_browsertime_video_tasks(
+def _is_video_task(task_name: str) -> bool:
+    """Return True if this task produces video artifacts we can download."""
+    return ("browsertime" in task_name and "profiling" not in task_name) or (
+        task_name.startswith("perftest-") and "-startup-" in task_name
+    )
+
+
+def _matches_high_conf(task_name: str, high_conf_tests: set[tuple[str, str]]) -> bool:
+    """Check if a task matches the high-confidence filter set."""
+    suite, platform = extract_suite_and_platform(task_name)
+    if suite and platform:
+        if (suite, platform) in high_conf_tests:
+            return True
+        # For perftest tasks, also try platform-substring matching since TC names
+        # and Treeherder names may differ slightly.
+        if task_name.startswith("perftest-"):
+            return any(
+                (platform.lower() in p.lower() or p.lower() in platform.lower())
+                and (suite.lower() in s.lower() or s.lower() in suite.lower())
+                for s, p in high_conf_tests
+            )
+        return False
+    # Can't determine suite/platform — include perftest tasks, skip others
+    return task_name.startswith("perftest-")
+
+
+def filter_video_tasks(
     tasks: list,
     platforms: list[str] | None = None,
     high_conf_tests: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """
-    Filter tasks to only browsertime tests with video artifacts. Deduplicates by test/platform.
-
-    Args:
-        tasks: List of TaskCluster tasks
-        platforms: Optional list of platform filters (e.g., ["linux", "windows"])
-        high_conf_tests: Optional set of (suite, platform) tuples from perfcompare with High confidence
+    Filter tasks to browsertime or perftest-startup tasks with video artifacts.
+    Deduplicates by test/platform.
     """
     filtered = []
     seen = set()
@@ -345,10 +429,7 @@ def filter_browsertime_video_tasks(
     for task in tasks:
         task_name = task.get("task", {}).get("metadata", {}).get("name", "")
 
-        if "browsertime" not in task_name:
-            continue
-
-        if "profiling" in task_name:
+        if not _is_video_task(task_name):
             continue
 
         status = task.get("status", {}).get("state")
@@ -356,20 +437,12 @@ def filter_browsertime_video_tasks(
             continue
 
         if platforms:
-            platform_match = False
-            for p in platforms:
-                if p.lower() in task_name.lower():
-                    platform_match = True
-                    break
+            platform_match = any(p.lower() in task_name.lower() for p in platforms)
             if not platform_match:
                 continue
 
-        if high_conf_tests:
-            suite, platform = extract_suite_and_platform(task_name)
-            if not suite or not platform:
-                continue
-            if (suite, platform) not in high_conf_tests:
-                continue
+        if high_conf_tests and not _matches_high_conf(task_name, high_conf_tests):
+            continue
 
         test_name, platform = extract_test_info(task_name)
         key = f"{platform}:{test_name}"
@@ -431,6 +504,24 @@ async def fetch_perfherder_data(
             return None
 
 
+async def list_task_artifacts(
+    session: aiohttp.ClientSession,
+    task_id: str,
+    semaphore: asyncio.Semaphore,
+) -> list[dict]:
+    """Return artifact list for a task: [{name, contentType, ...}]."""
+    url = f"{TASKCLUSTER_QUEUE}/task/{task_id}/artifacts"
+    async with semaphore:
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+                return data.get("artifacts", [])
+        except Exception:
+            return []
+
+
 def find_median_run_index(data: dict) -> int:
     """Find the run index whose replicate value is closest to the median (subtest value)."""
     try:
@@ -452,10 +543,16 @@ async def download_video_artifacts(
     output_dir: Path,
     max_concurrent: int = 10,
     all_runs: bool = False,
-) -> dict[str, list[Path]]:
-    """Download video artifacts for all tasks."""
+) -> dict[str, dict[str, list[Path]]]:
+    """Download video (and image) artifacts for all tasks.
+
+    Returns {"base": {"videos": [...], "images": [...]}, "new": {...}}.
+    """
     semaphore = asyncio.Semaphore(max_concurrent)
-    results: dict[str, list[Path]] = {"base": [], "new": []}
+    results: dict[str, dict[str, list[Path]]] = {
+        "base": {"videos": [], "images": []},
+        "new": {"videos": [], "images": []},
+    }
 
     total = len(video_tasks)
     completed = 0
@@ -465,60 +562,130 @@ async def download_video_artifacts(
         completed += 1
         print(f"\r  Downloaded {completed}/{total} artifacts...", end="", flush=True)
 
-    async def download_task_videos(vt: VideoTask) -> list[Path]:
-        """Download videos for a single task."""
-        downloaded = []
+    async def _extract_tgz_media(
+        tar_path: Path, extract_dir: Path, vt: VideoTask
+    ) -> dict[str, list[Path]]:
+        """Extract a tgz, apply median selection for videos, return {videos, images}."""
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(extract_dir)
 
-        # Try different artifact names (note: .tgz extension)
-        artifact_names = [
+        mp4s = sorted(extract_dir.rglob("*.mp4"))
+        pngs = sorted(extract_dir.rglob("*.png"))
+
+        ph_data = await fetch_perfherder_data(session, vt.task_id, semaphore)
+        median_idx = find_median_run_index(ph_data) if ph_data else 0
+        median_idx = min(median_idx, len(mp4s) - 1) if mp4s else 0
+
+        if all_runs:
+            videos = list(mp4s)
+            if mp4s:
+                (extract_dir / "median_idx.txt").write_text(str(median_idx))
+        else:
+            for i, mp4 in enumerate(mp4s):
+                if i != median_idx:
+                    mp4.unlink()
+            videos = [mp4s[median_idx]] if mp4s else []
+
+        tar_path.unlink()
+        return {"videos": videos, "images": pngs}
+
+    async def download_task_videos(vt: VideoTask) -> dict[str, list[Path]]:
+        task_dir = output_dir / vt.label / vt.platform / vt.test_name
+
+        # Try the standard tgz artifact paths (used by both browsertime and perftest)
+        tgz_candidates = [
             "public/test_info/browsertime-videos-annotated.tgz",
             "public/test_info/browsertime-videos-original.tgz",
             "public/test_info/browsertime-videos.tgz",
         ]
 
-        task_dir = output_dir / vt.label / vt.platform / vt.test_name
-
-        for artifact_name in artifact_names:
+        for artifact_name in tgz_candidates:
             tar_path = task_dir / f"{vt.task_id}.tar.gz"
-
             success = await download_artifact(
-                session, vt.task_id, artifact_name, tar_path, semaphore, progress
+                session,
+                vt.task_id,
+                artifact_name,
+                tar_path,
+                semaphore,
+                progress if vt.task_type == "browsertime" else None,
             )
-
             if success:
                 try:
-                    extract_dir = task_dir / vt.task_id
-                    extract_dir.mkdir(parents=True, exist_ok=True)
-
-                    with tarfile.open(tar_path, "r:gz") as tar:
-                        tar.extractall(extract_dir)
-
-                    mp4s = sorted(extract_dir.rglob("*.mp4"))
-
-                    ph_data = await fetch_perfherder_data(session, vt.task_id, semaphore)
-                    median_idx = find_median_run_index(ph_data) if ph_data else 0
-                    median_idx = min(median_idx, len(mp4s) - 1) if mp4s else 0
-
-                    if all_runs:
-                        downloaded = list(mp4s)
-                        # Write sidecar so viewer can label the median run
-                        (extract_dir / "median_idx.txt").write_text(str(median_idx))
-                    else:
-                        # Keep only the median video
-                        for i, mp4 in enumerate(mp4s):
-                            if i != median_idx:
-                                mp4.unlink()
-                        if mp4s:
-                            downloaded = [mp4s[median_idx]]
-
-                    tar_path.unlink()
-
+                    result = await _extract_tgz_media(tar_path, task_dir / vt.task_id, vt)
+                    if vt.task_type == "perftest":
+                        progress()
+                    return result
                 except Exception as e:
                     print(f"    Error extracting {tar_path}: {e}")
-
                 break
 
-        return downloaded
+        if vt.task_type != "perftest":
+            return {"videos": [], "images": []}
+
+        # Perftest fallback: discover artifacts via the TC artifacts list API
+        artifacts = await list_task_artifacts(session, vt.task_id, semaphore)
+        artifact_names_list = [a["name"] for a in artifacts]
+
+        # Exclude known build binary filenames and log/toolchain archives
+        excluded_names = {"target.tar.bz2", "target.zip", "target.apk", "build.tar.gz"}
+        excluded_words = {"log", "mozharness", "sdk", "crashreporter"}
+        archives = [
+            n
+            for n in artifact_names_list
+            if n.startswith("public/")
+            and (n.endswith(".tgz") or n.endswith(".zip"))
+            and Path(n).name not in excluded_names
+            and not any(x in n.lower() for x in excluded_words)
+        ]
+        direct_mp4 = [n for n in artifact_names_list if n.endswith(".mp4")]
+        direct_png = [n for n in artifact_names_list if n.endswith(".png")]
+
+        if not archives and not direct_mp4 and not direct_png:
+            progress()
+            return {"videos": [], "images": []}
+
+        extract_dir = task_dir / vt.task_id
+        extract_dir.mkdir(parents=True, exist_ok=True)
+
+        if archives:
+            archive = archives[0]
+            ext = ".zip" if archive.endswith(".zip") else ".tgz"
+            archive_path = task_dir / f"{vt.task_id}{ext}"
+            success = await download_artifact(session, vt.task_id, archive, archive_path, semaphore)
+            if success:
+                try:
+                    if ext == ".tgz":
+                        with tarfile.open(archive_path, "r:gz") as tar:
+                            tar.extractall(extract_dir)
+                    else:
+                        with zipfile.ZipFile(archive_path) as zf:
+                            zf.extractall(extract_dir)
+                    archive_path.unlink()
+                    progress()
+                    return {
+                        "videos": sorted(extract_dir.rglob("*.mp4")),
+                        "images": sorted(extract_dir.rglob("*.png")),
+                    }
+                except Exception as e:
+                    print(f"    Error extracting {archive_path}: {e}")
+
+        if direct_mp4 or direct_png:
+            videos: list[Path] = []
+            images: list[Path] = []
+            for remote in direct_mp4:
+                local = extract_dir / Path(remote).name
+                if await download_artifact(session, vt.task_id, remote, local, semaphore):
+                    videos.append(local)
+            for remote in direct_png:
+                local = extract_dir / Path(remote).name
+                if await download_artifact(session, vt.task_id, remote, local, semaphore):
+                    images.append(local)
+            progress()
+            return {"videos": sorted(videos), "images": sorted(images)}
+
+        progress()
+        return {"videos": [], "images": []}
 
     # Download all in parallel
     tasks_to_run = [download_task_videos(vt) for vt in video_tasks]
@@ -529,8 +696,9 @@ async def download_video_artifacts(
     for vt, result in zip(video_tasks, all_results, strict=False):
         if isinstance(result, Exception):
             print(f"    Failed: {vt.test_name} - {result}")
-        elif isinstance(result, list):
-            results[vt.label].extend(result)
+        elif isinstance(result, dict):
+            results[vt.label]["videos"].extend(result.get("videos", []))
+            results[vt.label]["images"].extend(result.get("images", []))
 
     return results
 
@@ -575,6 +743,9 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
             base_videos = sorted(test_dir.rglob("*.mp4"))
             new_videos = sorted(new_test_dir.rglob("*.mp4"))
 
+            base_images = sorted(test_dir.rglob("*.png"))
+            new_images = sorted(new_test_dir.rglob("*.png"))
+
             if base_videos and new_videos:
                 key = f"{platform}/{test_name}"
                 base_task_ids = {d.name for d in test_dir.iterdir() if d.is_dir()}
@@ -588,6 +759,8 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
                     "base_median_idx": read_median_idx(test_dir),
                     "new_median_idx": read_median_idx(new_test_dir),
                     "same_task_warning": same_task,
+                    "base_images": [str(v.relative_to(output_dir)) for v in base_images],
+                    "new_images": [str(v.relative_to(output_dir)) for v in new_images],
                 }
 
     return comparisons
@@ -612,6 +785,7 @@ def organize_single_revision(output_dir: Path) -> dict:
             test_name = test_dir.name
 
             videos = sorted(test_dir.rglob("*.mp4"))
+            images = sorted(test_dir.rglob("*.png"))
             if videos:
                 key = f"{platform}/{test_name}"
                 comparisons[key] = {
@@ -619,6 +793,7 @@ def organize_single_revision(output_dir: Path) -> dict:
                     "test_name": test_name,
                     "base_videos": [str(v.relative_to(output_dir)) for v in videos],
                     "base_median_idx": read_median_idx(test_dir),
+                    "base_images": [str(v.relative_to(output_dir)) for v in images],
                 }
 
     return comparisons
@@ -699,6 +874,9 @@ Examples:
     lando_ids: tuple[str, str, str, str] | None = None
     new_push = None
     try:
+        # Strip stray whitespace/newlines that can corrupt a pasted URL
+        args.revisions = [r.replace("\n", "").replace("\r", "").strip() for r in args.revisions]
+
         if len(args.revisions) == 1:
             if args.no_compare:
                 base_push = parse_try_url(args.revisions[0])
@@ -785,27 +963,27 @@ Examples:
 
         # Find task group IDs
         print("\nFinding task groups...")
-        base_push.task_group_id = await find_task_group_id(
+        base_push.task_group_ids = await find_task_group_ids(
             session, base_push.revision, base_push.repo
         )
-        print(f"  Base task group: {base_push.task_group_id}")
+        print(f"  Base task groups: {base_push.task_group_ids}")
         if new_push:
-            new_push.task_group_id = await find_task_group_id(
+            new_push.task_group_ids = await find_task_group_ids(
                 session, new_push.revision, new_push.repo
             )
-            print(f"  New task group:  {new_push.task_group_id}")
+            print(f"  New task groups:  {new_push.task_group_ids}")
 
         # Get tasks in groups
         print("\nFetching task lists...")
         if new_push:
             base_tasks, new_tasks = await asyncio.gather(
-                get_tasks_in_group(session, base_push.task_group_id),
-                get_tasks_in_group(session, new_push.task_group_id),
+                get_tasks_for_revision(session, base_push.task_group_ids),
+                get_tasks_for_revision(session, new_push.task_group_ids),
             )
             print(f"  Base: {len(base_tasks)} total tasks")
             print(f"  New:  {len(new_tasks)} total tasks")
         else:
-            base_tasks = await get_tasks_in_group(session, base_push.task_group_id)
+            base_tasks = await get_tasks_for_revision(session, base_push.task_group_ids)
             new_tasks = []
             print(f"  Base: {len(base_tasks)} total tasks")
 
@@ -832,14 +1010,10 @@ Examples:
         elif args.all_tests:
             print("\n--all-tests flag set: downloading all tests (ignoring confidence filter)")
 
-        # Filter to browsertime video tasks
-        print("\nFiltering browsertime tasks...")
-        base_bt = filter_browsertime_video_tasks(base_tasks, platforms, high_conf_tests)
-        new_bt = (
-            filter_browsertime_video_tasks(new_tasks, platforms, high_conf_tests)
-            if new_push
-            else []
-        )
+        # Filter to video tasks (browsertime + perftest startup)
+        print("\nFiltering video tasks...")
+        base_bt = filter_video_tasks(base_tasks, platforms, high_conf_tests)
+        new_bt = filter_video_tasks(new_tasks, platforms, high_conf_tests) if new_push else []
 
         # Apply test name filters
         if test_filters:
@@ -854,12 +1028,12 @@ Examples:
                 if any(f.lower() in t["task"]["metadata"]["name"].lower() for f in test_filters)
             ]
 
-        print(f"  Base: {len(base_bt)} browsertime tasks")
+        print(f"  Base: {len(base_bt)} video tasks")
         if new_push:
-            print(f"  New:  {len(new_bt)} browsertime tasks")
+            print(f"  New:  {len(new_bt)} video tasks")
 
         if not base_bt or (new_push and not new_bt):
-            print("\nNo matching browsertime tasks found!")
+            print("\nNo matching video tasks found!")
             sys.exit(1)
 
         # Build list of video tasks to download
@@ -868,6 +1042,7 @@ Examples:
         for task in base_bt:
             task_name = task["task"]["metadata"]["name"]
             test_name, platform = extract_test_info(task_name)
+            task_type = "perftest" if task_name.startswith("perftest-") else "browsertime"
             video_tasks.append(
                 VideoTask(
                     task_id=task["status"]["taskId"],
@@ -875,12 +1050,14 @@ Examples:
                     platform=platform,
                     label="base",
                     revision=base_push.revision,
+                    task_type=task_type,
                 )
             )
 
         for task in new_bt:
             task_name = task["task"]["metadata"]["name"]
             test_name, platform = extract_test_info(task_name)
+            task_type = "perftest" if task_name.startswith("perftest-") else "browsertime"
             video_tasks.append(
                 VideoTask(
                     task_id=task["status"]["taskId"],
@@ -888,6 +1065,7 @@ Examples:
                     platform=platform,
                     label="new",
                     revision=new_push.revision,
+                    task_type=task_type,
                 )
             )
 
@@ -898,16 +1076,27 @@ Examples:
             session, video_tasks, output_dir, max_concurrent, all_runs=args.all_runs
         )
 
+        base_videos = results["base"]["videos"]
+        new_videos = results["new"]["videos"]
+        base_images = results["base"]["images"]
+        new_images = results["new"]["images"]
+
         print("\nDownloaded:")
-        print(f"  Base: {len(results['base'])} videos")
-        print(f"  New:  {len(results['new'])} videos")
+        print(
+            f"  Base: {len(base_videos)} videos"
+            + (f", {len(base_images)} images" if base_images else "")
+        )
+        print(
+            f"  New:  {len(new_videos)} videos"
+            + (f", {len(new_images)} images" if new_images else "")
+        )
 
         # Report tasks where no video was downloaded
         downloaded_base_ids = {
-            p.parts[p.parts.index("base") + 2] for p in results["base"] if "base" in p.parts
+            p.parts[p.parts.index("base") + 2] for p in base_videos if "base" in p.parts
         }
         downloaded_new_ids = {
-            p.parts[p.parts.index("new") + 2] for p in results["new"] if "new" in p.parts
+            p.parts[p.parts.index("new") + 2] for p in new_videos if "new" in p.parts
         }
         missing = []
         for vt in video_tasks:
