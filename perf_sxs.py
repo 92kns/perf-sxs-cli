@@ -179,10 +179,11 @@ async def fetch_perfcompare_data_from_treeherder(
     session: aiohttp.ClientSession, perfcompare_url: str
 ) -> set[tuple[str, str]]:
     """
-    Fetch performance comparison data from Treeherder API and extract high confidence tests.
+    Fetch high-confidence tests from Treeherder for all video-producing frameworks.
 
-    Uses the Treeherder API endpoint that PerfCompare itself uses:
-    https://treeherder.mozilla.org/api/perfcompare/results/
+    Always queries frameworks 13 (browsertime/raptor) and 15 (mozperftest) in
+    parallel, plus whatever framework is in the URL, so mixed perfcompare links
+    work without --all-tests.
     """
     parsed = urlparse(perfcompare_url)
     params = parse_qs(parsed.query)
@@ -191,53 +192,44 @@ async def fetch_perfcompare_data_from_treeherder(
     base_repo = params.get("baseRepo", ["mozilla-central"])[0]
     new_rev = params.get("newRev", [""])[0]
     new_repo = params.get("newRepo", ["mozilla-central"])[0]
-    framework = params.get("framework", ["1"])[0]
     test_version = params.get("test_version", ["student-t"])[0]
     replicates = params.get("replicates", ["false"])[0]
 
+    # 13 = browsertime/raptor, 15 = mozperftest (Android startup) — the only two that produce videos
+    frameworks = ["13", "15"]
+
     api_url = "https://treeherder.mozilla.org/api/perfcompare/results/"
-    api_params = {
+    base_params = {
         "base_repository": base_repo,
         "base_revision": base_rev,
         "new_repository": new_repo,
         "new_revision": new_rev,
-        "framework": framework,
         "no_subtests": "true",
         "replicates": replicates,
         "test_version": test_version,
     }
 
-    query_string = "&".join(f"{k}={v}" for k, v in api_params.items())
-    full_url = f"{api_url}?{query_string}"
+    async def _fetch_framework(fw: str) -> set[tuple[str, str]]:
+        qs = "&".join(f"{k}={v}" for k, v in {**base_params, "framework": fw}.items())
+        try:
+            async with session.get(f"{api_url}?{qs}") as resp:
+                if resp.status != 200:
+                    return set()
+                results = await resp.json()
+                if not isinstance(results, list):
+                    return set()
+                return {
+                    (r["suite"], r["platform"])
+                    for r in results
+                    if r.get("confidence_text") == "High" and r.get("suite") and r.get("platform")
+                }
+        except Exception:
+            return set()
 
-    try:
-        print("  Calling Treeherder API...")
-        async with session.get(full_url) as resp:
-            if resp.status != 200:
-                print(f"  Error: Treeherder API returned status {resp.status}")
-                return set()
-
-            results = await resp.json()
-
-            if not isinstance(results, list):
-                print("  Error: Unexpected API response format")
-                return set()
-
-            high_conf_tests = set()
-
-            for result in results:
-                if result.get("confidence_text") == "High":
-                    suite = result.get("suite")
-                    platform = result.get("platform")
-                    if suite and platform:
-                        high_conf_tests.add((suite, platform))
-
-            return high_conf_tests
-
-    except Exception as e:
-        print(f"  Error fetching from Treeherder API: {e}")
-        print("  Fallback: Use --confidence-json with manually downloaded JSON")
-        return set()
+    print(f"  Calling Treeherder API (frameworks: {', '.join(frameworks)})...")
+    results = await asyncio.gather(*[_fetch_framework(fw) for fw in frameworks])
+    high_conf_tests: set[tuple[str, str]] = set().union(*results)
+    return high_conf_tests
 
 
 async def find_task_group_ids(
