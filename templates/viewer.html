@@ -246,10 +246,13 @@
             overflow-y: auto;
         }
         .image-gallery img {
-            width: 100%;
+            max-width: 100%;
+            max-height: 300px;
+            width: auto;
             display: block;
             border-radius: 3px;
             cursor: zoom-in;
+            object-fit: contain;
         }
         .image-gallery img:hover { opacity: 0.9; }
         .analysis-panel {
@@ -415,35 +418,44 @@
                 </div>
                 {% endif %}
 
-                {% if comp.base_images or comp.new_images %}
+                {% set has_images = comp.base_images and (comp.base_images|map('length')|sum) > 0 %}
+                {% if has_images %}
+                {% set default_run = comp.base_median_idx or 0 %}
                 <div class="images-panel images-collapsed" id="images-{{ key|replace('/', '-') }}">
                     <div class="images-header" onclick="toggleImages('{{ key }}')">
-                        <span>Screenshots ({{ [comp.base_images|default([])|length, comp.new_images|default([])|length]|max }})</span>
+                        <span>Screenshots</span>
                         <span class="toggle-icon">▼</span>
                     </div>
                     <div class="images-body">
-                        <div class="image-panel base">
+                        <div class="image-panel base" id="base-images-{{ key|replace('/', '-') }}">
                             <h4>{{ base_revision[:12] if base_revision else 'N/A' }}</h4>
-                            <div class="image-gallery">
-                                {% for img in comp.base_images %}
-                                <img src="/video/{{ img|urlencode }}" alt="base screenshot {{ loop.index }}"
-                                     onclick="openFullscreen(this)">
+                            {% for run_imgs in comp.base_images %}
+                            <div class="run-images image-gallery"
+                                 data-run="{{ loop.index0 }}"
+                                 style="{{ '' if loop.index0 == default_run else 'display:none' }}">
+                                {% for img in run_imgs %}
+                                <img src="/video/{{ img|urlencode }}" onclick="openFullscreen(this)">
                                 {% else %}
                                 <p style="color:#555;padding:0.5rem;font-size:0.8rem">No screenshots</p>
                                 {% endfor %}
                             </div>
+                            {% endfor %}
                         </div>
-                        {% if mode != 'single' %}
-                        <div class="image-panel new">
+                        {% if mode != 'single' and comp.new_images %}
+                        <div class="image-panel new" id="new-images-{{ key|replace('/', '-') }}">
                             <h4>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h4>
-                            <div class="image-gallery">
-                                {% for img in comp.new_images %}
-                                <img src="/video/{{ img|urlencode }}" alt="new screenshot {{ loop.index }}"
-                                     onclick="openFullscreen(this)">
+                            {% set new_default = comp.new_median_idx or 0 %}
+                            {% for run_imgs in comp.new_images %}
+                            <div class="run-images image-gallery"
+                                 data-run="{{ loop.index0 }}"
+                                 style="{{ '' if loop.index0 == new_default else 'display:none' }}">
+                                {% for img in run_imgs %}
+                                <img src="/video/{{ img|urlencode }}" onclick="openFullscreen(this)">
                                 {% else %}
                                 <p style="color:#555;padding:0.5rem;font-size:0.8rem">No screenshots</p>
                                 {% endfor %}
                             </div>
+                            {% endfor %}
                         </div>
                         {% endif %}
                     </div>
@@ -504,9 +516,20 @@
 
             currentTest = key;
 
-            // Auto-expand images panel if present
+            // Auto-expand images panel and sync to default run
             const imagesPanel = document.getElementById(`images-${safeKey}`);
-            if (imagesPanel) imagesPanel.classList.remove('images-collapsed');
+            if (imagesPanel) {
+                imagesPanel.classList.remove('images-collapsed');
+                const comp = comparisons[key];
+                const defaultRun = comp.base_median_idx ?? 0;
+                for (const side of ['base-images', 'new-images']) {
+                    const panel = document.getElementById(`${side}-${safeKey}`);
+                    if (!panel) continue;
+                    panel.querySelectorAll('.run-images').forEach(div => {
+                        div.style.display = parseInt(div.dataset.run) === defaultRun ? '' : 'none';
+                    });
+                }
+            }
 
             // Auto-play if enabled
             if (autoPlayEnabled) {
@@ -567,6 +590,15 @@
             const newVideo = document.getElementById(`new-${safeKey}`);
             if (newVideo && comp.new_videos && comp.new_videos[index]) {
                 newVideo.src = '/video/' + encodeURIComponent(comp.new_videos[index]);
+            }
+
+            // Sync image panels to the selected run
+            for (const side of ['base-images', 'new-images']) {
+                const panel = document.getElementById(`${side}-${safeKey}`);
+                if (!panel) continue;
+                panel.querySelectorAll('.run-images').forEach(div => {
+                    div.style.display = parseInt(div.dataset.run) === parseInt(index) ? '' : 'none';
+                });
             }
         }
 

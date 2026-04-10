@@ -577,15 +577,22 @@ async def download_video_artifacts(
         median_idx = find_median_run_index(ph_data) if ph_data else 0
         median_idx = min(median_idx, len(mp4s) - 1) if mp4s else 0
 
+        image_groups = _group_images_by_video(mp4s, pngs)
+
         if all_runs:
             videos = list(mp4s)
             if mp4s:
                 (extract_dir / "median_idx.txt").write_text(str(median_idx))
         else:
+            keep_images = set(image_groups[median_idx]) if median_idx < len(image_groups) else set()
             for i, mp4 in enumerate(mp4s):
                 if i != median_idx:
                     mp4.unlink()
+            for png in pngs:
+                if png not in keep_images:
+                    png.unlink()
             videos = [mp4s[median_idx]] if mp4s else []
+            pngs = sorted(keep_images)
 
         tar_path.unlink()
         return {"videos": videos, "images": pngs}
@@ -703,6 +710,33 @@ async def download_video_artifacts(
     return results
 
 
+def _group_images_by_video(mp4s: list[Path], pngs: list[Path]) -> list[list[Path]]:
+    """Group PNG images with their corresponding video.
+
+    Uses per-subdirectory grouping when each video is in a distinct directory.
+    Falls back to even index-based distribution for flat (same-dir) layouts.
+    Returns one sublist per video, possibly empty.
+    """
+    if not pngs or not mp4s:
+        return [[] for _ in mp4s]
+
+    n = len(mp4s)
+    mp4_dirs = [mp4.parent for mp4 in mp4s]
+
+    # Per-subdir grouping only works when each mp4 is in its own unique directory
+    if len(set(mp4_dirs)) == n:
+        grouped = [[p for p in pngs if p.parent == d] for d in mp4_dirs]
+        if any(grp for grp in grouped):
+            return grouped
+
+    # Flat layout: distribute evenly by index
+    per_run = len(pngs) // n
+    if per_run:
+        return [pngs[i * per_run : (i + 1) * per_run] for i in range(n)]
+
+    return [[pngs[i]] if i < len(pngs) else [] for i in range(n)]
+
+
 def read_median_idx(test_dir: Path) -> int | None:
     """Read median_idx.txt sidecar written during --all-runs download."""
     for task_dir in test_dir.iterdir():
@@ -751,6 +785,8 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
                 base_task_ids = {d.name for d in test_dir.iterdir() if d.is_dir()}
                 new_task_ids = {d.name for d in new_test_dir.iterdir() if d.is_dir()}
                 same_task = bool(base_task_ids & new_task_ids)
+                base_img_groups = _group_images_by_video(base_videos, base_images)
+                new_img_groups = _group_images_by_video(new_videos, new_images)
                 comparisons[key] = {
                     "platform": platform,
                     "test_name": test_name,
@@ -759,8 +795,12 @@ def organize_videos_for_comparison(output_dir: Path) -> dict:
                     "base_median_idx": read_median_idx(test_dir),
                     "new_median_idx": read_median_idx(new_test_dir),
                     "same_task_warning": same_task,
-                    "base_images": [str(v.relative_to(output_dir)) for v in base_images],
-                    "new_images": [str(v.relative_to(output_dir)) for v in new_images],
+                    "base_images": [
+                        [str(p.relative_to(output_dir)) for p in grp] for grp in base_img_groups
+                    ],
+                    "new_images": [
+                        [str(p.relative_to(output_dir)) for p in grp] for grp in new_img_groups
+                    ],
                 }
 
     return comparisons
@@ -788,12 +828,15 @@ def organize_single_revision(output_dir: Path) -> dict:
             images = sorted(test_dir.rglob("*.png"))
             if videos:
                 key = f"{platform}/{test_name}"
+                img_groups = _group_images_by_video(videos, images)
                 comparisons[key] = {
                     "platform": platform,
                     "test_name": test_name,
                     "base_videos": [str(v.relative_to(output_dir)) for v in videos],
                     "base_median_idx": read_median_idx(test_dir),
-                    "base_images": [str(v.relative_to(output_dir)) for v in images],
+                    "base_images": [
+                        [str(p.relative_to(output_dir)) for p in grp] for grp in img_groups
+                    ],
                 }
 
     return comparisons
