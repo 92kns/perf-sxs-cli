@@ -6,15 +6,13 @@ Or with uv: uv run pytest test_perf_sxs.py
 """
 
 import json
-
-# Import functions to test
-import sys
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
 from perf_sxs import (
     extract_suite_and_platform,
     extract_test_info,
@@ -25,6 +23,11 @@ from perf_sxs import (
     parse_perfcompare_url,
     parse_try_url,
     read_median_idx,
+)
+from perf_sxs.download import (
+    UnsafeArchiveMemberError,
+    _safe_extract_tar,
+    _safe_extract_zip,
 )
 
 
@@ -384,6 +387,114 @@ class TestHighConfidenceFilteringMarked(TestHighConfidenceFiltering):
     """High confidence filtering tests (marked as integration tests)."""
 
     pass
+
+
+class TestSafeArchiveExtraction:
+    """Regression tests for the tar-slip/zip-slip fix in perf_sxs.download.
+
+    Archives here come from CI (Taskcluster artifacts) — untrusted input from
+    this tool's perspective. `tarfile.extractall`/`zipfile.extractall` will
+    happily write outside the target directory if a member's name contains
+    `../` or is absolute; `_safe_extract_tar`/`_safe_extract_zip` must refuse
+    that instead of silently letting it happen.
+    """
+
+    def test_safe_extract_tar_rejects_path_traversal_member(self):
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tar_path = tmp_path / "malicious.tar.gz"
+            extract_dir = tmp_path / "extract"
+            escape_target = tmp_path / "evil.txt"
+
+            with tarfile.open(tar_path, "w:gz") as tar:
+                info = tarfile.TarInfo(name="../evil.txt")
+                data = b"pwned"
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+
+            with tarfile.open(tar_path, "r:gz") as tar, pytest.raises(UnsafeArchiveMemberError):
+                _safe_extract_tar(tar, extract_dir)
+
+            assert not escape_target.exists()
+
+    def test_safe_extract_tar_rejects_symlink_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tar_path = tmp_path / "malicious_symlink.tar.gz"
+            extract_dir = tmp_path / "extract"
+
+            with tarfile.open(tar_path, "w:gz") as tar:
+                info = tarfile.TarInfo(name="evil_link")
+                info.type = tarfile.SYMTYPE
+                info.linkname = "/etc/passwd"
+                tar.addfile(info)
+
+            with tarfile.open(tar_path, "r:gz") as tar, pytest.raises(UnsafeArchiveMemberError):
+                _safe_extract_tar(tar, extract_dir)
+
+    def test_safe_extract_tar_allows_benign_archive(self):
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            tar_path = tmp_path / "benign.tar.gz"
+            extract_dir = tmp_path / "extract"
+            extract_dir.mkdir()
+
+            with tarfile.open(tar_path, "w:gz") as tar:
+                info = tarfile.TarInfo(name="video.mp4")
+                data = b"fake video bytes"
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+
+            with tarfile.open(tar_path, "r:gz") as tar:
+                _safe_extract_tar(tar, extract_dir)
+
+            assert (extract_dir / "video.mp4").read_bytes() == b"fake video bytes"
+
+    def test_safe_extract_zip_rejects_path_traversal_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            zip_path = tmp_path / "malicious.zip"
+            extract_dir = tmp_path / "extract"
+            escape_target = tmp_path / "evil.txt"
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("../evil.txt", "pwned")
+
+            with zipfile.ZipFile(zip_path) as zf, pytest.raises(UnsafeArchiveMemberError):
+                _safe_extract_zip(zf, extract_dir)
+
+            assert not escape_target.exists()
+
+    def test_safe_extract_zip_rejects_absolute_path_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            zip_path = tmp_path / "malicious_absolute.zip"
+            extract_dir = tmp_path / "extract"
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("/tmp/evil.txt", "pwned")
+
+            with zipfile.ZipFile(zip_path) as zf, pytest.raises(UnsafeArchiveMemberError):
+                _safe_extract_zip(zf, extract_dir)
+
+    def test_safe_extract_zip_allows_benign_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            zip_path = tmp_path / "benign.zip"
+            extract_dir = tmp_path / "extract"
+            extract_dir.mkdir()
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("screenshot.png", "fake png bytes")
+
+            with zipfile.ZipFile(zip_path) as zf:
+                _safe_extract_zip(zf, extract_dir)
+
+            assert (extract_dir / "screenshot.png").read_text() == "fake png bytes"
 
 
 if __name__ == "__main__":

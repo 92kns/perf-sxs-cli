@@ -3,7 +3,7 @@
 Side-by-side video comparison viewer for browsertime tests.
 
 Usage:
-    python viewer.py [video_dir] [--port PORT]
+    perf-sxs-viewer [video_dir] [--port PORT]
 """
 
 import argparse
@@ -15,10 +15,16 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, send_file
 
+PACKAGE_DIR = Path(__file__).parent
+
 
 def create_app(video_dir: Path) -> Flask:
     """Create and configure the Flask app."""
-    app = Flask(__name__, template_folder="templates", static_folder="static")
+    app = Flask(
+        __name__,
+        template_folder=str(PACKAGE_DIR / "templates"),
+        static_folder=str(PACKAGE_DIR / "static"),
+    )
 
     video_dir = Path(video_dir)
     meta_path = video_dir / "comparisons.json"
@@ -77,7 +83,7 @@ def create_app(video_dir: Path) -> Flask:
     return app
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Side-by-side video comparison viewer")
     parser.add_argument(
         "video_dir",
@@ -86,25 +92,50 @@ def main():
         help="Directory containing downloaded videos",
     )
     parser.add_argument("--port", "-p", type=int, default=3333, help="Port to serve on")
-    parser.add_argument("--host", "-H", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument(
+        "--host",
+        "-H",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1; use 0.0.0.0 to expose on your LAN)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a JSON summary ({'serving': true, 'url': ...}) before serving, "
+        "and skip auto-launching a browser tab",
+    )
+    return parser
 
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
 
     video_dir = Path(args.video_dir)
     if not video_dir.exists():
-        print(f"Error: Directory {video_dir} does not exist")
-        print("Run perf_sxs.py first to download videos")
+        message = f"Directory {video_dir} does not exist"
+        if args.json:
+            print(json.dumps({"error": message, "exit_code": 1}))
+        else:
+            print(f"Error: {message}")
+            print("Run perf-sxs first to download videos")
         return 1
 
     app = create_app(video_dir)
-    url = f"http://localhost:{args.port}"
-    print(f"Starting viewer at {url}")
-    print(f"Video directory: {video_dir.absolute()}")
+    url = f"http://{args.host}:{args.port}"
 
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    if args.json:
+        # Machine-readable summary first, printed before app.run() blocks.
+        print(json.dumps({"serving": True, "url": url}))
+    else:
+        print(f"Starting viewer at {url}")
+        print(f"Video directory: {video_dir.absolute()}")
+
+    if not args.json and os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host=args.host, port=args.port, debug=True)
+    app.run(host=args.host, port=args.port, debug=False)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
