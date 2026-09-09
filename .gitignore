@@ -42,6 +42,7 @@ ENV/
 
 # Downloaded videos and artifacts
 sxs_videos/
+applink_videos/
 test_videos/
 **/browsertime-*/
 *.mp4
@@ -50,6 +51,8 @@ test_videos/
 
 # Output files
 comparisons.json
+analysis.json
+analysis_report.html
 *.log
 
 # Test artifacts

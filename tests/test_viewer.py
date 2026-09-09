@@ -1,21 +1,17 @@
 """
-Tests for viewer.py Flask application.
+Tests for perf_sxs.viewer Flask application.
 
 Run with: pytest tests/test_viewer.py
 Or with uv: uv run pytest tests/test_viewer.py
 """
 
 import json
-
-# Import viewer module
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from viewer import create_app
+from perf_sxs.viewer import build_parser, create_app, main
 
 
 @pytest.fixture
@@ -209,6 +205,46 @@ class TestVideoPathSecurity:
             response = client.get(f"/video/{path}")
             # Should return 403 (forbidden), 404 (not found), or 400 (bad request)
             assert response.status_code in [403, 404, 400]
+
+
+class TestViewerCliJson:
+    """Test perf-sxs-viewer's --json flag (parsing and the error path only;
+
+    the success path calls app.run() and blocks, so it isn't exercised here).
+    """
+
+    def test_json_flag_parses(self):
+        parser = build_parser()
+        args = parser.parse_args(["./sxs_videos", "--json"])
+        assert args.json is True
+
+    def test_json_flag_defaults_false(self):
+        parser = build_parser()
+        args = parser.parse_args(["./sxs_videos"])
+        assert args.json is False
+
+    def test_missing_directory_json_error(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "sys.argv", ["perf-sxs-viewer", "/nonexistent/sxs_videos_dir", "--json"]
+        )
+        exit_code = main()
+        assert exit_code == 1
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data == {
+            "error": "Directory /nonexistent/sxs_videos_dir does not exist",
+            "exit_code": 1,
+        }
+
+    def test_missing_directory_prose_error(self, monkeypatch, capsys):
+        monkeypatch.setattr("sys.argv", ["perf-sxs-viewer", "/nonexistent/sxs_videos_dir"])
+        exit_code = main()
+        assert exit_code == 1
+
+        captured = capsys.readouterr()
+        assert "Error: Directory /nonexistent/sxs_videos_dir does not exist" in captured.out
+        assert "{" not in captured.out
 
 
 # Pytest markers

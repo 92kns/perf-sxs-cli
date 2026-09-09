@@ -13,26 +13,26 @@ uv sync
 ### Perfcompare URL (recommended)
 
 ```bash
-uv run python perf_sxs.py "https://perf.compare/compare-results?baseRev=BASE&newRev=NEW&..."
+uv run perf-sxs "https://perf.compare/compare-results?baseRev=BASE&newRev=NEW&..."
 ```
 
 The tool automatically fetches high-confidence tests from Treeherder (frameworks 13 + 15 in parallel) and downloads only those videos. Works for both browsertime and mozperftest comparisons, including mixed perfcompare links.
 
 ```bash
 # Download all tests, ignore confidence filter
-uv run python perf_sxs.py "https://perf.compare/..." --all-tests
+uv run perf-sxs "https://perf.compare/..." --all-tests
 
 # Download all tests but narrow to specific ones
-uv run python perf_sxs.py "https://perf.compare/..." --all-tests --tests applink
+uv run perf-sxs "https://perf.compare/..." --all-tests --tests applink
 
 # Download all runs per test (default: median only)
-uv run python perf_sxs.py "https://perf.compare/..." --all-runs
+uv run perf-sxs "https://perf.compare/..." --all-runs
 ```
 
 ### Lando URL
 
 ```bash
-uv run python perf_sxs.py \
+uv run perf-sxs \
     "https://perf.compare/compare-lando-results?baseLando=181700&newLando=181701&baseRepo=try&newRepo=try&framework=13"
 ```
 
@@ -41,7 +41,7 @@ Lando IDs are resolved to revision hashes via the Lando API. If the job is still
 ### Two revisions
 
 ```bash
-uv run python perf_sxs.py \
+uv run perf-sxs \
     881d2bbfaf536748b4ebdbadeaaa2c9c269f91e8 \
     56290454af1890c3344757213fc7199839fe3e7f
 ```
@@ -49,7 +49,7 @@ uv run python perf_sxs.py \
 ### Single revision (no comparison)
 
 ```bash
-uv run python perf_sxs.py 881d2bbfaf536748b4ebdbadeaaa2c9c269f91e8 --no-compare
+uv run perf-sxs 881d2bbfaf536748b4ebdbadeaaa2c9c269f91e8 --no-compare
 ```
 
 Shows a single full-width video panel instead of side-by-side.
@@ -57,8 +57,11 @@ Shows a single full-width video panel instead of side-by-side.
 ### View previously downloaded videos
 
 ```bash
-uv run python viewer.py ./sxs_videos
+uv run perf-sxs-viewer ./sxs_videos
 ```
+
+Both `perf-sxs` and `perf-sxs-viewer` are also available as regular commands (no
+`uv run` prefix needed) after `uv tool install .` or `pip install .`.
 
 ## Options
 
@@ -67,6 +70,7 @@ uv run python viewer.py ./sxs_videos
 | `--platforms`, `-p` | Comma-separated platform filters (e.g., `linux,a55`) | All |
 | `--tests`, `-t` | Comma-separated test name filters (e.g., `amazon,applink`) | All |
 | `--output`, `-o` | Output directory | `./sxs_videos` |
+| `--force` | Overwrite an existing, non-empty output directory | false |
 | `--max-downloads`, `-m` | Concurrent downloads | 10 |
 | `--no-serve` | Skip auto-launching viewer | false |
 | `--all-tests` | Skip High confidence filter | false |
@@ -74,6 +78,11 @@ uv run python viewer.py ./sxs_videos
 | `--no-compare` | Single revision mode | false |
 | `--confidence-json` | Local perfcompare JSON for confidence filtering | None |
 | `--port` | Viewer port | 3333 |
+| `--host` | Viewer bind address (use `0.0.0.0` to expose on your LAN) | `127.0.0.1` |
+
+If `--output` already points at a non-empty directory, the tool refuses to run
+unless `--force` is passed — pass `--force` to overwrite it, or pick a
+different `--output` path.
 
 ## How It Works
 

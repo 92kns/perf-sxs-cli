@@ -368,7 +368,7 @@ async def _run(args: argparse.Namespace) -> None:
     video_dir = Path(args.video_dir)
     meta_path = video_dir / "comparisons.json"
     if not meta_path.exists():
-        print(f"Error: {meta_path} not found. Run perf_sxs.py first.")
+        print(f"Error: {meta_path} not found. Run perf-sxs first.")
         sys.exit(1)
 
     with open(meta_path) as f:

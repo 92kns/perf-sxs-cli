@@ -34,7 +34,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Run mypy
-        run: uv run mypy perf_sxs.py viewer.py
+        run: uv run mypy perf_sxs/
 
   test:
     name: Test

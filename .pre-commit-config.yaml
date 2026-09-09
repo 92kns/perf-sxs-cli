@@ -13,7 +13,7 @@ repos:
     hooks:
       - id: mypy
         name: mypy type checker
-        files: ^(perf_sxs\.py|viewer\.py)$
+        files: ^perf_sxs/.*\.py$
         additional_dependencies:
           - aiohttp>=3.9.0
           - flask>=2.0.0
