@@ -30,13 +30,25 @@ perf-sxs 881d2bbfaf53 56290454af18
 
 # single revision, no comparison target
 perf-sxs 881d2bbfaf53 --no-compare
+
+# two browsers from one push, or base-push app A vs new-push app B
+perf-sxs 881d2bbfaf53 --cross-browser firefox,chrome
+perf-sxs <base-th-url> <new-th-url> --cross-browser fenix,chrome-m --tests applink
 ```
 
 Other flags an agent is likely to need: `--platforms`/`-p` and `--tests`/`-t`
 (comma-separated filters), `--all-tests` (skip the High-confidence filter),
 `--all-runs` (default is median-run-only), `--confidence-json <path>` (use a
 local perfcompare JSON instead of hitting the Treeherder API), `--output`/`-o`,
-`--no-serve` (skip auto-launching the viewer).
+`--no-serve` (skip auto-launching the viewer), `--test-version
+{student-t,mann-whitney-u}` (which significance test filters; defaults to the
+perfcompare URL's `test_version`), `--cross-browser BASE_APP,NEW_APP` (app
+tokens as in task names: `firefox`, `chrome`, `fenix`, `chrome-m`, `safari`, …;
+turns the significance filter off).
+
+Plain revisions default to `repo=try`. For mozilla-central/autoland, pass a
+Treeherder URL (`…/jobs?repo=autoland&revision=…`). Old try pushes expire from
+the Taskcluster index and fail with "No tasks found for revision …".
 
 ### --json mode
 
@@ -56,8 +68,11 @@ On success:
   "base_repo": "try",
   "new_revision": "56290454af1890c3344757213fc7199839fe3e7f",
   "new_repo": "try",
+  "cross_browser": null,
   "platforms": null,
   "tests": null,
+  "test_version": "student-t",
+  "significant_tests": 9,
   "output_dir": "sxs_videos",
   "video_tasks_found": 12,
   "downloaded": {
@@ -72,7 +87,14 @@ On success:
 ```
 
 `mode` is `"single"` when run with `--no-compare` (then `new_revision`/
-`new_repo` are `null`). `platforms`/`tests` echo the `--platforms`/`--tests`
+`new_repo` are `null`). `cross_browser` is `{"base_app", "new_app"}` when
+`--cross-browser` is set (for a same-push run `new_revision == base_revision`).
+`test_version`/`significant_tests` describe the significance filter, or `null`
+when none ran (no perfcompare URL, `--all-tests`, `--cross-browser`, or
+Treeherder unreachable — the last one logs a warning and downloads everything).
+`comparisons_count` counts viewer entries. A multi-step test like nav-bench
+contributes one per step (key `platform/test::step`), so it can exceed
+`video_tasks_found`. `platforms`/`tests` echo the `--platforms`/`--tests`
 filters actually applied (`null` if not passed). `missing` lists
 `{label, platform, test_name}` for any task where no video artifact could be
 found. If `--no-serve` wasn't passed, `viewer` is
@@ -83,9 +105,11 @@ browser tab is auto-launched in `--json` mode; that's a human convenience,
 not something a script wants.
 
 On any failure (bad argument count, an unparseable single-argument URL, a
-Lando resolution failure, a non-empty `--output` dir without `--force`, or no
-matching video tasks found), stdout gets one error object and the process
-exits 1:
+bad `--cross-browser` value, a missing `--confidence-json` file, a Lando
+resolution failure, a Taskcluster lookup failure, a non-empty `--output` dir
+without `--force`, a perfcompare comparison with **no significant changes**,
+or no matching video tasks found), stdout gets one error object and the
+process exits 1:
 
 ```json
 {"error": "No matching video tasks found", "exit_code": 1}
@@ -130,6 +154,17 @@ machine-readable surface for whatever's being viewed.
 
 Both `perf-sxs` and `perf-sxs-viewer` default to binding `127.0.0.1`;
 `0.0.0.0` (LAN-visible) is opt-in via `--host`.
+
+## Working on this repo
+
+Internals live in `docs/internals.md`: module map, pipeline, the CI artifact
+and Treeherder facts the code relies on (and that are easy to get wrong), the
+`comparisons.json` schema, and the dev loop. Read it before changing
+selection, download, or organize logic. Run the checks before handing work back:
+
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run mypy perf_sxs && uv run pytest -q
+```
 
 ## Typical agent workflow
 
