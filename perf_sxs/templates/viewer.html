@@ -250,6 +250,11 @@
             cursor: zoom-in;
         }
         .image-gallery img:hover { opacity: 0.9; }
+        .perfcompare-rows { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.75rem; }
+        .pc-row { font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: #0f3460; color: #ccc; }
+        .pc-row.regression { background: #e94560; color: #000; }
+        .pc-row.improvement { background: #4ecca3; color: #000; }
+        .analysis-metrics { font-size: 0.8rem; color: #aaa; margin-bottom: 0.5rem; }
         .analysis-panel {
             background: #16213e;
             border-radius: 8px;
@@ -402,6 +407,18 @@
                     {% endif %}
                 </div>
 
+                {% if comp.perfcompare %}
+                <div class="perfcompare-rows">
+                    {% for r in comp.perfcompare %}
+                    <span class="pc-row {{ r.direction or '' }}" title="perfcompare: {{ r.suite }} {{ r.test }} ({{ r.platform }})">
+                        {{ r.test or r.suite }}
+                        {% if r.delta_pct is not none %}{{ '%+.1f'|format(r.delta_pct) }}%{% endif %}
+                        {% if r.direction %}· {{ r.direction }}{% endif %}
+                    </span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
                 {% if comp.base_videos %}
                 <div class="video-container" style="{{ 'grid-template-columns: 1fr;' if mode == 'single' else '' }}">
                     <div class="video-panel base">
@@ -479,6 +496,15 @@
                         </span>
                     </div>
                     <div class="analysis-body">
+                        {% set d = a.get('deltas_pct') or {} %}
+                        {% if d %}
+                        <div class="analysis-metrics">
+                            {% for name, v in d.items() if name != 'source' and v is not none %}
+                            {{ name }} {{ '%+.1f'|format(v) }}%{% if not loop.last %} · {% endif %}
+                            {% endfor %}
+                            <span style="color:#666">({{ 'browsertime, median of all runs' if d.get('source') == 'browsertime' else 'measured from the video' }})</span>
+                        </div>
+                        {% endif %}
                         {% if a.get('observations') %}
                         <ul>
                             {% for obs in a.observations %}

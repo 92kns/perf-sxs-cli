@@ -12,6 +12,7 @@ import aiohttp
 from .api import download_artifact, fetch_perfherder_data, list_task_artifacts
 from .models import VideoTask
 from .organize import (
+    KEPT_STEPS_FILE,
     MEDIAN_IDX_FILE,
     MEDIAN_IDX_STEPS_FILE,
     _group_images_by_video,
@@ -19,7 +20,22 @@ from .organize import (
     _sorted,
     group_videos_by_step,
 )
-from .selection import find_median_run_index
+from .selection import find_median_run_index, is_profiled_run
+
+# Written into a task's extract dir once its media is fully extracted and
+# pruned; `--resume` skips tasks that have it.
+DONE_MARKER = ".perf-sxs-done"
+PERFHERDER_DATA_FILE = "perfherder-data.json"
+
+
+def _drop_profiled_runs(paths: list[Path]) -> list[Path]:
+    """Delete media recorded under a profiler, unless that's all there is."""
+    profiled = [p for p in paths if is_profiled_run(p)]
+    if not profiled or len(profiled) == len(paths):
+        return paths
+    for path in profiled:
+        path.unlink()
+    return [p for p in paths if not is_profiled_run(p)]
 
 
 class UnsafeArchiveMemberError(Exception):
@@ -83,10 +99,18 @@ async def download_video_artifacts(
     max_concurrent: int = 10,
     all_runs: bool = False,
     quiet: bool = False,
+    resume: bool = False,
+    include_profiled: bool = False,
 ) -> dict[str, dict[str, list[Path]]]:
     """Download video (and image) artifacts for all tasks.
 
     Returns {"base": {"videos": [...], "images": [...]}, "new": {...}}.
+
+    - ``resume``: reuse any task already fully extracted by an earlier run
+      (its extract dir has `DONE_MARKER`) instead of downloading it again.
+    - ``include_profiled``: keep perftest runs recorded under a profiler
+      (`selection.PROFILER_RUN_DIRS`); they're dropped by default.
+    - ``VideoTask.steps``: for multi-step tasks, only those steps are kept.
 
     With `quiet=True` (used by `perf-sxs --json`), progress/error output is
     written to stderr instead of stdout, so stdout stays reserved for the
@@ -122,11 +146,25 @@ async def download_video_artifacts(
 
         mp4s = _sorted(extract_dir.rglob("*.mp4"))
         pngs = _sorted(extract_dir.rglob("*.png"))
+        if not include_profiled:
+            mp4s = _drop_profiled_runs(mp4s)
+            pngs = _drop_profiled_runs(pngs)
         if not mp4s:
             return {"videos": [], "images": pngs}
 
         ph_data = await fetch_perfherder_data(session, vt.task_id, semaphore)
+        if ph_data:
+            (extract_dir / PERFHERDER_DATA_FILE).write_text(json.dumps(ph_data))
         steps = group_videos_by_step(mp4s)
+        if vt.steps:
+            wanted = {label: v for label, v in steps.items() if label in vt.steps}
+            # Step names that don't match anything mean the layout isn't what
+            # we expect — keep everything rather than nothing.
+            if wanted:
+                steps = wanted
+        filtered_steps = len(steps) < len(group_videos_by_step(mp4s))
+        if filtered_steps:
+            (extract_dir / KEPT_STEPS_FILE).write_text(json.dumps(sorted(steps)))
 
         medians: dict[str, int] = {}
         keep_videos: list[Path] = []
@@ -135,32 +173,55 @@ async def download_video_artifacts(
             idx = find_median_run_index(ph_data, step=label or None) if ph_data else 0
             idx = min(idx, len(step_videos) - 1)
             medians[label] = idx
-            image_groups = _group_images_by_video(
-                step_videos, _images_for_step(label, step_videos, pngs)
-            )
+            step_images = _images_for_step(label, step_videos, pngs)
+            image_groups = _group_images_by_video(step_videos, step_images)
             if all_runs:
                 keep_videos.extend(step_videos)
-                keep_images.extend(img for grp in image_groups for img in grp)
+                keep_images.extend(step_images if filtered_steps else [])
             else:
                 keep_videos.append(step_videos[idx])
                 if idx < len(image_groups):
                     keep_images.extend(image_groups[idx])
 
         if all_runs:
-            if len(steps) == 1:
+            if len(steps) == 1 and not filtered_steps:
                 (extract_dir / MEDIAN_IDX_FILE).write_text(str(next(iter(medians.values()))))
             else:
                 (extract_dir / MEDIAN_IDX_STEPS_FILE).write_text(json.dumps(medians))
-            keep_images = pngs
-        else:
-            keep = set(keep_videos) | set(keep_images)
-            for path in mp4s + pngs:
-                if path not in keep:
-                    path.unlink()
+            if not filtered_steps:
+                keep_images = pngs
+        keep = set(keep_videos) | set(keep_images)
+        for path in mp4s + pngs:
+            if path not in keep:
+                path.unlink()
 
         return {"videos": _sorted(keep_videos), "images": _sorted(keep_images)}
 
     async def download_task_videos(vt: VideoTask) -> dict[str, list[Path]]:
+        extract_dir = output_dir / vt.label / vt.platform / vt.test_name / vt.task_id
+        marker = extract_dir / DONE_MARKER
+        # A finished task is only reusable if it was pruned the same way.
+        options = json.dumps(
+            {
+                "all_runs": all_runs,
+                "include_profiled": include_profiled,
+                "steps": sorted(vt.steps) if vt.steps else None,
+            },
+            sort_keys=True,
+        )
+        if resume and marker.exists() and marker.read_text() == options:
+            progress()
+            return {
+                "videos": _sorted(extract_dir.rglob("*.mp4")),
+                "images": _sorted(extract_dir.rglob("*.png")),
+            }
+        result = await _download_task_videos(vt)
+        complete = not result.pop("partial", False)
+        if result["videos"] and complete:
+            marker.write_text(options)
+        return result
+
+    async def _download_task_videos(vt: VideoTask) -> dict[str, list[Path]]:
         task_dir = output_dir / vt.label / vt.platform / vt.test_name
 
         # Try the standard tgz artifact paths (used by both browsertime and perftest)
@@ -236,10 +297,12 @@ async def download_video_artifacts(
                             _safe_extract_zip(zf, extract_dir)
                     archive_path.unlink()
                     progress()
-                    return {
-                        "videos": _sorted(extract_dir.rglob("*.mp4")),
-                        "images": _sorted(extract_dir.rglob("*.png")),
-                    }
+                    found_mp4 = _sorted(extract_dir.rglob("*.mp4"))
+                    found_png = _sorted(extract_dir.rglob("*.png"))
+                    if not include_profiled:
+                        found_mp4 = _drop_profiled_runs(found_mp4)
+                        found_png = _drop_profiled_runs(found_png)
+                    return {"videos": found_mp4, "images": found_png}
                 except Exception as e:
                     print(
                         f"    Error extracting {archive_path}: {e}",
@@ -249,16 +312,24 @@ async def download_video_artifacts(
         if direct_mp4 or direct_png:
             videos: list[Path] = []
             images: list[Path] = []
+            failed = False
             for remote in direct_mp4:
                 local = extract_dir / Path(remote).name
                 if await download_artifact(session, vt.task_id, remote, local, semaphore):
                     videos.append(local)
+                else:
+                    failed = True
             for remote in direct_png:
                 local = extract_dir / Path(remote).name
                 if await download_artifact(session, vt.task_id, remote, local, semaphore):
                     images.append(local)
+                else:
+                    failed = True
             progress()
-            return {"videos": _sorted(videos), "images": _sorted(images)}
+            out: dict = {"videos": _sorted(videos), "images": _sorted(images)}
+            if failed:
+                out["partial"] = True  # don't mark done: --resume should retry
+            return out
 
         progress()
         return {"videos": [], "images": []}

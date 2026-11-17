@@ -182,6 +182,15 @@ def extract_suite_and_platform(task_name: str) -> tuple[str, str]:
     return "", ""
 
 
+# Perftest profiling variants record extra runs under these subdirectories.
+# Profilers slow the app down, so those runs aren't comparable to normal ones.
+PROFILER_RUN_DIRS = frozenset({"simpleperf", "geckoprofiler", "simpleperf-geckoprofiler"})
+
+
+def is_profiled_run(path: Path) -> bool:
+    return path.parent.name in PROFILER_RUN_DIRS
+
+
 def _is_video_task(task_name: str) -> bool:
     """Return True if this task produces video artifacts we can download."""
     return ("-browsertime-" in task_name and "profiling" not in task_name) or (
@@ -189,27 +198,79 @@ def _is_video_task(task_name: str) -> bool:
     )
 
 
+def _pair_matches_task(suite: str, platform: str, s: str, p: str, perftest: bool) -> bool:
+    """Whether a perfcompare (suite ``s``, platform ``p``) belongs to a task's (suite, platform)."""
+    if (s, p) == (suite, platform):
+        return True
+    # Multi-step tests report one suite per step as `<suite>.<step>`
+    # (e.g. nav-bench.amazon-nav-load) — the task is significant if any step is.
+    if s.startswith(suite + ".") and p == platform:
+        return True
+    # Perftest TC names and Treeherder names may differ slightly.
+    return perftest and (
+        (platform.lower() in p.lower() or p.lower() in platform.lower())
+        and (suite.lower() in s.lower() or s.lower() in suite.lower())
+    )
+
+
 def _matches_high_conf(task_name: str, high_conf_tests: set[tuple[str, str]]) -> bool:
     """Check if a task matches the high-confidence filter set."""
     suite, platform = extract_suite_and_platform(task_name)
     if suite and platform:
-        if (suite, platform) in high_conf_tests:
-            return True
-        # Multi-step tests report one suite per step as `<suite>.<step>`
-        # (e.g. nav-bench.amazon-nav-load) — the task is significant if any step is.
-        if any(s.startswith(suite + ".") and p == platform for s, p in high_conf_tests):
-            return True
-        # For perftest tasks, also try platform-substring matching since TC names
-        # and Treeherder names may differ slightly.
-        if task_name.startswith("perftest-"):
-            return any(
-                (platform.lower() in p.lower() or p.lower() in platform.lower())
-                and (suite.lower() in s.lower() or s.lower() in suite.lower())
-                for s, p in high_conf_tests
-            )
-        return False
+        perftest = task_name.startswith("perftest-")
+        return any(_pair_matches_task(suite, platform, s, p, perftest) for s, p in high_conf_tests)
     # Can't determine suite/platform — include perftest tasks, skip others
     return task_name.startswith("perftest-")
+
+
+def rows_for_task(task_name: str, rows: list[dict]) -> list[dict]:
+    """The significant perfcompare rows (see `summarize_row`) that belong to a task."""
+    suite, platform = extract_suite_and_platform(task_name)
+    if not (suite and platform):
+        return []
+    perftest = task_name.startswith("perftest-")
+    return [
+        r for r in rows if _pair_matches_task(suite, platform, r["suite"], r["platform"], perftest)
+    ]
+
+
+def significant_steps(task_name: str, rows: list[dict]) -> set[str] | None:
+    """Steps of a multi-step task that perfcompare flagged, or None for "keep every step".
+
+    nav-bench reports each step as its own suite `nav-bench.<step>`. When every
+    matching row is such a step suite, only those steps are worth downloading.
+    Any whole-task row (suite == the task's suite) means keep everything.
+    """
+    suite, _ = extract_suite_and_platform(task_name)
+    matched = rows_for_task(task_name, rows)
+    if not suite or not matched:
+        return None
+    steps = set()
+    for r in matched:
+        if r["suite"].startswith(suite + "."):
+            steps.add(r["suite"][len(suite) + 1 :])
+            continue
+        kind = _load_kind(r)
+        if kind is None:
+            return None
+        steps.add(kind)
+    return steps
+
+
+def _load_kind(row: dict) -> str | None:
+    """ "cold"/"warm" from a row's extra_options (tp6 page loads), else None."""
+    tokens = set(str(row.get("extra_options") or "").split())
+    kinds = [k for k in ("cold", "warm") if k in tokens]
+    return kinds[0] if len(kinds) == 1 else None
+
+
+def rows_for_step(rows: list[dict], step: str | None) -> list[dict]:
+    """Narrow a task's rows to one step (rows for the whole task always apply)."""
+    if not step:
+        return rows
+    if step in ("cold", "warm"):
+        return [r for r in rows if _load_kind(r) in (step, None)]
+    return [r for r in rows if "." not in r["suite"] or r["suite"].endswith("." + step)]
 
 
 def filter_video_tasks(
@@ -253,11 +314,68 @@ def filter_video_tasks(
     return filtered
 
 
-def load_high_confidence_from_file(
-    json_path: Path, test_version: str | None = None
-) -> set[tuple[str, str]]:
+def summarize_row(result: dict) -> dict:
+    """Compact, JSON-friendly view of one Treeherder perfcompare row.
+
+    student-t rows carry ``base_avg_value``/``new_avg_value``/``delta_percentage``;
+    mann-whitney-u rows only carry ``*_standard_stats``, so fall back to the
+    medians and compute the delta.
     """
-    Load perfcompare JSON from a local file and extract significant (suite, platform) pairs.
+
+    def _avg(side: str) -> float | None:
+        v = result.get(f"{side}_avg_value")
+        if isinstance(v, int | float):
+            return float(v)
+        stats = result.get(f"{side}_standard_stats") or {}
+        v = stats.get("median", stats.get("mean"))
+        return float(v) if isinstance(v, int | float) else None
+
+    base, new = _avg("base"), _avg("new")
+    delta = result.get("delta_percentage")
+    if not isinstance(delta, int | float):
+        delta = round((new - base) / base * 100, 2) if base and new is not None else None
+    direction = result.get("direction_of_change")
+    if direction not in ("regression", "improvement"):
+        if result.get("is_regression"):
+            direction = "regression"
+        elif result.get("is_improvement"):
+            direction = "improvement"
+        else:
+            direction = None
+    return {
+        "suite": result.get("suite", ""),
+        "test": result.get("test", ""),
+        "platform": result.get("platform", ""),
+        "unit": result.get("new_measurement_unit") or result.get("base_measurement_unit"),
+        "lower_is_better": result.get("lower_is_better"),
+        "base": base,
+        "new": new,
+        "delta_pct": delta,
+        "direction": direction,
+        "confidence": result.get("confidence_text"),
+        "extra_options": result.get("extra_options") or "",
+    }
+
+
+def significant_rows(results: list, test_version: str | None = None) -> list[dict]:
+    """Summaries of the rows that count as significant under ``test_version``."""
+    return [
+        summarize_row(r)
+        for r in results
+        if isinstance(r, dict)
+        and r.get("suite")
+        and r.get("platform")
+        and is_significant_result(r, test_version)
+    ]
+
+
+def significant_pairs(rows: list[dict]) -> set[tuple[str, str]]:
+    return {(r["suite"], r["platform"]) for r in rows}
+
+
+def load_significant_rows_from_file(json_path: Path, test_version: str | None = None) -> list[dict]:
+    """
+    Load perfcompare JSON from a local file and return its significant rows.
 
     Accepts both the perfcompare UI export shape (``[{test_name: [rows]}]``) and
     the raw Treeherder API shape (``[row, ...]``). See `is_significant_result`
@@ -274,16 +392,14 @@ def load_high_confidence_from_file(
             for test_data in item.values():
                 if isinstance(test_data, list):
                     rows.extend(r for r in test_data if isinstance(r, dict))
+    return significant_rows(rows, test_version)
 
-    high_conf_tests = set()
-    for result in rows:
-        if is_significant_result(result, test_version):
-            suite = result.get("suite")
-            platform = result.get("platform")
-            if suite and platform:
-                high_conf_tests.add((suite, platform))
 
-    return high_conf_tests
+def load_high_confidence_from_file(
+    json_path: Path, test_version: str | None = None
+) -> set[tuple[str, str]]:
+    """Significant (suite, platform) pairs from a local perfcompare JSON file."""
+    return significant_pairs(load_significant_rows_from_file(json_path, test_version))
 
 
 def _closest_to_value(subtest: dict, *, true_median: bool = False) -> int:
@@ -312,6 +428,10 @@ def find_median_run_index(data: dict, step: str | None = None) -> int:
                     name = subtest.get("name", "")
                     if (name == step or name.startswith(step + "-")) and subtest.get("replicates"):
                         return _closest_to_value(subtest, true_median=True)
+            # cold/warm page loads: one suite per kind, told apart by extraOptions.
+            for suite in data.get("suites", []):
+                if step in (suite.get("extraOptions") or []) and suite.get("subtests"):
+                    return _closest_to_value(suite["subtests"][0])
         subtests = data["suites"][0]["subtests"]
         if not subtests:
             return 0
