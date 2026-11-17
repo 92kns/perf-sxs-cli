@@ -108,10 +108,13 @@ Both `perf-sxs` and `perf-sxs-viewer` are also available as regular commands (no
 | `--tests`, `-t` | Comma-separated test name filters (e.g., `amazon,applink`) | All |
 | `--output`, `-o` | Output directory | `./sxs_videos` |
 | `--force` | Overwrite an existing, non-empty output directory | false |
+| `--resume` | Add to an existing output directory from the same revisions; tasks already downloaded with the same options are skipped | false |
 | `--max-downloads`, `-m` | Concurrent downloads | 10 |
 | `--no-serve` | Skip auto-launching viewer | false |
 | `--all-tests` | Skip High confidence filter | false |
 | `--all-runs` | Download all runs (default: median only) | false |
+| `--all-steps` | Multi-step tests: keep every step, not only those perfcompare flagged | false |
+| `--include-profiled-runs` | Keep perftest runs recorded under a profiler (`simpleperf/`, `geckoprofiler/`) | false |
 | `--no-compare` | Single revision mode | false |
 | `--confidence-json` | Local perfcompare JSON (UI export or raw Treeherder API rows) for the significance filter | None |
 | `--test-version` | `student-t` or `mann-whitney-u` significance | URL's, else `student-t` |
@@ -121,8 +124,9 @@ Both `perf-sxs` and `perf-sxs-viewer` are also available as regular commands (no
 | `--host` | Viewer bind address (use `0.0.0.0` to expose on your LAN) | `127.0.0.1` |
 
 If `--output` already points at a non-empty directory, the tool refuses to run
-unless `--force` is passed — pass `--force` to overwrite it, or pick a
-different `--output` path.
+unless `--force` (wipe it) or `--resume` (add to it) is passed. `--resume`
+refuses a directory that holds a different base/new pair. Use it to widen a
+run, e.g. add `--platforms windows` without re-downloading the Linux videos.
 
 ## How It Works
 
@@ -131,7 +135,7 @@ different `--output` path.
 3. **Fetch significant tests** — queries Treeherder frameworks 13 (browsertime) and 15 (mozperftest) in parallel, using the t-test or MWU (`--test-version`); union of results
 4. **Filter tasks** — completed browsertime or perftest-startup tasks, deduplicated by test/platform
 5. **Download artifacts** — tries `public/test_info/browsertime-videos-annotated.tgz` first; for perftest tasks falls back to TC artifact listing to find the archive (e.g. `public/build/<test>.tgz`)
-6. **Median selection** — downloads `public/test_info/perfherder-data.json` per task and keeps the run closest to the median (per step, for multi-step tests); deletes others unless `--all-runs`
+6. **Median selection** — downloads `public/test_info/perfherder-data.json` per task (kept next to the videos) and keeps the run closest to the median (per step, for multi-step tests); deletes others unless `--all-runs`. Multi-step tests keep only the steps perfcompare flagged (`--all-steps` keeps all); perftest runs recorded under a profiler are dropped
 7. **Extract & organize** — extracts archives, groups screenshots with their video run, organizes into `base/` and `new/`
 8. **Generate metadata** — writes `comparisons.json`
 9. **Launch viewer** — auto-opens browser
@@ -144,9 +148,10 @@ different `--output` path.
 - **Sidebar search** — Fuse.js fuzzy search with extended syntax (`'exact`, `^prefix`, `!negate`, `a | b`)
 - **Speed control** — 0.25x–2x, global across tests and remembered across reloads
 - **Loop toggle** — loop both videos; also global and remembered
-- **Multi-step tests** — tests that record several steps in one task (e.g. nav-bench) get one entry per step (`test › step`)
+- **Multi-step tests** — tests that record several steps in one task get one entry per step (`test › step`): nav-bench steps, and the `cold`/`warm` loads of tp6 essential/bytecode tests
+- **perfcompare deltas** — each comparison shows the significant perfcompare rows that selected it (metric, % change, regression/improvement)
 - **Sync toggle** — disable synchronized playback
-- **Analysis panel** — appears if `analysis.json` exists (from `/analyze-perf-videos` skill or `analyze.py`)
+- **Analysis panel** — appears if `analysis.json` exists (from the `/analyze-perf-videos` skill or `perf-sxs-analyze run`)
 
 ## Output Structure
 
@@ -177,7 +182,9 @@ sxs_videos/
       "new_median_idx": 1,
       "base_images": [["base/.../screenshot.png"]],
       "new_images": [["new/.../screenshot.png"]],
-      "same_task_warning": false
+      "same_task_warning": false,
+      "perfcompare": [{"suite": "amazon", "test": "", "platform": "…", "delta_pct": 8.2,
+                       "direction": "regression", "base": 512.0, "new": 554.0, "unit": "ms"}]
     }
   }
 }
@@ -189,19 +196,37 @@ Multi-step tests use keys `platform/test-name::step` with `step` set. Top-level
 
 ## Video Analysis
 
+`perf-sxs-analyze` measures each comparison and explains what is visibly
+different. It needs `ffmpeg`.
+
+1. **prepare** decodes each video, computes a visual-progress curve, and renders
+   one contact sheet per comparison: BASE row over NEW row, with columns at
+   first visual change, 50%, 85% and visually complete. Metrics come from
+   browsertime's own `perfherder-data.json` (median over all runs) when it was
+   downloaded; otherwise they're computed from the frames (approximate). The
+   output goes to `analysis/` with the most-changed comparisons first.
+2. **judge**: Claude looks at each sheet next to the numbers and the perfcompare
+   rows, and says what differs (late content, missing images, layout shifts,
+   different page content between the two sides).
+3. **report** writes `analysis.json`, which the viewer reads, and
+   `analysis_report.html`, which is self-contained and can be attached to a bug.
+
+In Claude Code, no API key needed:
+
 ```
 /analyze-perf-videos
 /analyze-perf-videos ./sxs_videos amazon,cnn
 ```
 
-Or standalone (requires `ffmpeg` + `ANTHROPIC_API_KEY`):
+Standalone, through the Anthropic API (`claude-opus-5-5` by default):
 
 ```bash
 uv sync --extra analyze
-uv run python analyze.py ./sxs_videos --concurrency 10
+uv run perf-sxs-analyze run ./sxs_videos --tests amazon
 ```
 
-Writes `analysis.json` (viewer reads it) and `analysis_report.html` (self-contained, shareable).
+`uv run perf-sxs-analyze prepare` on its own needs no API access and is a
+quick way to get the contact sheets and numbers.
 
 ## Troubleshooting
 

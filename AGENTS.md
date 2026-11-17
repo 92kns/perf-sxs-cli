@@ -38,7 +38,9 @@ perf-sxs <base-th-url> <new-th-url> --cross-browser fenix,chrome-m --tests appli
 
 Other flags an agent is likely to need: `--platforms`/`-p` and `--tests`/`-t`
 (comma-separated filters), `--all-tests` (skip the High-confidence filter),
-`--all-runs` (default is median-run-only), `--confidence-json <path>` (use a
+`--all-runs` (default is median-run-only), `--resume` (add to an existing
+`--output` dir from the same revisions, skipping finished tasks), `--all-steps`
+(multi-step tests: keep steps perfcompare didn't flag), `--confidence-json <path>` (use a
 local perfcompare JSON instead of hitting the Treeherder API), `--output`/`-o`,
 `--no-serve` (skip auto-launching the viewer), `--test-version
 {student-t,mann-whitney-u}` (which significance test filters; defaults to the
@@ -94,7 +96,9 @@ when none ran (no perfcompare URL, `--all-tests`, `--cross-browser`, or
 Treeherder unreachable — the last one logs a warning and downloads everything).
 `comparisons_count` counts viewer entries. A multi-step test like nav-bench
 contributes one per step (key `platform/test::step`), so it can exceed
-`video_tasks_found`. `platforms`/`tests` echo the `--platforms`/`--tests`
+`video_tasks_found`. When a significance filter ran, each entry in
+`comparisons.json` has a `perfcompare` list of the significant rows behind it
+(`suite`, `test`, `delta_pct`, `direction`, `base`, `new`, `unit`). `platforms`/`tests` echo the `--platforms`/`--tests`
 filters actually applied (`null` if not passed). `missing` lists
 `{label, platform, test_name}` for any task where no video artifact could be
 found. If `--no-serve` wasn't passed, `viewer` is
@@ -136,7 +140,7 @@ original multi-line prose to stdout, unchanged.
 ## perf-sxs-viewer
 
 Serves a directory `perf-sxs` already populated (reads `comparisons.json`,
-and `analysis.json` if present from `analyze.py`).
+and `analysis.json` if present from `perf-sxs-analyze`).
 
 ```bash
 perf-sxs-viewer ./sxs_videos
@@ -177,3 +181,6 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy perf_sxs && u
    where `comparisons.json` landed.
 4. To actually look at the videos: drop `--no-serve` (auto-launches a browser
    tab, human mode only) or run `perf-sxs-viewer <output_dir>` later.
+5. To explain what changed: the `analyze-perf-videos` skill, or
+   `perf-sxs-analyze prepare <output_dir>` for contact sheets plus metrics in
+   `<output_dir>/analysis/manifest.json` (no API key needed).
