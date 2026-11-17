@@ -905,7 +905,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "anthropic", marker = "extra == 'analyze'", specifier = ">=0.40.0" },
+    { name = "anthropic", marker = "extra == 'analyze'", specifier = ">=0.86.0" },
     { name = "flask", specifier = ">=2.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
