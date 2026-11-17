@@ -14,6 +14,11 @@ from .selection import natural_sort_key
 
 MEDIAN_IDX_FILE = "median_idx.txt"  # single-step tasks
 MEDIAN_IDX_STEPS_FILE = "median_idx.json"  # multi-step tasks: {step_label: idx}
+# Steps kept when a download pruned a multi-step task to its significant
+# steps. With one step left the layout alone no longer says which one it is.
+KEPT_STEPS_FILE = "kept_steps.json"
+# Browsertime page-load kinds; also perfherder `extraOptions` tokens.
+LOAD_KINDS = ("cold", "warm")
 
 
 def _sorted(paths) -> list[Path]:
@@ -58,6 +63,11 @@ def group_videos_by_step(mp4s: list[Path]) -> dict[str, list[Path]]:
 
     dirs = list(groups)
     names = [d.name for d in dirs]
+    # tp6 "essential"/"bytecode" tasks load one page cold and warm:
+    # `<site>/cold/query-<hash>/data/video` and `<site>/warm/query-<hash>/...`.
+    load_kinds = [d.parent.name if d.parent.name in LOAD_KINDS else "" for d in dirs]
+    if all(load_kinds) and len(set(load_kinds)) == len(load_kinds):
+        names = load_kinds
     if len(set(names)) == len(names):
         labels = names
     else:
@@ -122,12 +132,28 @@ def read_median_idx(test_dir: Path, step: str = "") -> int | None:
     return None
 
 
+def _kept_steps(test_dir: Path) -> list[str]:
+    for path in test_dir.glob(f"*/{KEPT_STEPS_FILE}"):
+        try:
+            steps = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(steps, list):
+            return [str(x) for x in steps]
+    return []
+
+
 def _side(test_dir: Path, output_dir: Path) -> dict[str, dict]:
     """Per-step videos/images/median for one side (base or new) of a test."""
     videos = list(test_dir.rglob("*.mp4"))
     pngs = _sorted(test_dir.rglob("*.png"))
     out = {}
-    for label, step_videos in group_videos_by_step(videos).items():
+    groups = group_videos_by_step(videos)
+    if list(groups) == [""]:
+        kept = _kept_steps(test_dir)
+        if len(kept) == 1:
+            groups = {kept[0]: groups[""]}
+    for label, step_videos in groups.items():
         img_groups = _group_images_by_video(step_videos, _images_for_step(label, step_videos, pngs))
         out[label] = {
             "videos": [str(v.relative_to(output_dir)) for v in step_videos],

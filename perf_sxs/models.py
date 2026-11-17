@@ -26,3 +26,6 @@ class VideoTask:
     label: str  # "base" or "new"
     revision: str
     task_type: str = "browsertime"  # "browsertime" or "perftest"
+    task_name: str = ""
+    # Multi-step tasks: only keep these steps' videos (None = every step).
+    steps: set[str] | None = None

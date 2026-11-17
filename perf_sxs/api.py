@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import aiohttp
 
 from .models import LANDO_API, TASKCLUSTER_INDEX, TASKCLUSTER_QUEUE
-from .selection import STUDENT_T, is_significant_result
+from .selection import STUDENT_T, significant_pairs, significant_rows
 
 TREEHERDER_PERFCOMPARE_API = "https://treeherder.mozilla.org/api/perfcompare/results/"
 
@@ -106,13 +106,14 @@ def perfcompare_test_version(perfcompare_url: str, override: str | None = None) 
     return params.get("test_version", [STUDENT_T])[0] or STUDENT_T
 
 
-async def fetch_perfcompare_data_from_treeherder(
+async def fetch_significant_rows(
     session: aiohttp.ClientSession,
     perfcompare_url: str,
     test_version: str | None = None,
-) -> set[tuple[str, str]] | None:
+) -> list[dict] | None:
     """
-    Fetch significant (suite, platform) pairs from Treeherder for all video-producing frameworks.
+    Fetch significant perfcompare rows (`selection.summarize_row` shape) from
+    Treeherder for all video-producing frameworks.
 
     Always queries frameworks 13 (browsertime/raptor) and 15 (mozperftest) in
     parallel so mixed perfcompare links work without --all-tests.
@@ -122,7 +123,7 @@ async def fetch_perfcompare_data_from_treeherder(
 
     Returns None if *every* framework request failed (so the caller can tell
     "couldn't reach Treeherder" apart from "no significant changes"), else
-    the (possibly empty) set.
+    the (possibly empty) list.
     """
     params = parse_qs(urlparse(perfcompare_url).query)
     version = perfcompare_test_version(perfcompare_url, test_version)
@@ -140,7 +141,7 @@ async def fetch_perfcompare_data_from_treeherder(
     # 13 = browsertime/raptor, 15 = mozperftest (Android startup) — the only two that produce videos
     frameworks = ["13", "15"]
 
-    async def _fetch_framework(fw: str) -> set[tuple[str, str]] | None:
+    async def _fetch_framework(fw: str) -> list[dict] | None:
         url = f"{TREEHERDER_PERFCOMPARE_API}?{urlencode({**base_params, 'framework': fw})}"
         try:
             resp = await request_with_retry(session, "GET", url)
@@ -150,14 +151,7 @@ async def fetch_perfcompare_data_from_treeherder(
                 results = await resp.json()
                 if not isinstance(results, list):
                     return None
-                return {
-                    (r["suite"], r["platform"])
-                    for r in results
-                    if isinstance(r, dict)
-                    and r.get("suite")
-                    and r.get("platform")
-                    and is_significant_result(r, version)
-                }
+                return significant_rows(results, version)
         except Exception:
             return None
 
@@ -165,7 +159,17 @@ async def fetch_perfcompare_data_from_treeherder(
     ok = [r for r in results if r is not None]
     if not ok:
         return None
-    return set().union(*ok)
+    return [row for rows in ok for row in rows]
+
+
+async def fetch_perfcompare_data_from_treeherder(
+    session: aiohttp.ClientSession,
+    perfcompare_url: str,
+    test_version: str | None = None,
+) -> set[tuple[str, str]] | None:
+    """Significant (suite, platform) pairs; see `fetch_significant_rows`."""
+    rows = await fetch_significant_rows(session, perfcompare_url, test_version)
+    return None if rows is None else significant_pairs(rows)
 
 
 async def find_task_group_ids(
