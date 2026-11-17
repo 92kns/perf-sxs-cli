@@ -8,7 +8,6 @@ Usage:
 
 import argparse
 import json
-import os
 import threading
 import webbrowser
 from pathlib import Path
@@ -50,6 +49,7 @@ def create_app(video_dir: Path) -> Flask:
             mode=metadata.get("mode", "compare"),
             base_revision=metadata.get("base_revision"),
             new_revision=metadata.get("new_revision"),
+            cross_browser=metadata.get("cross_browser"),
             comparisons=metadata.get("comparisons", {}),
             comparisons_json=json.dumps(metadata.get("comparisons", {})),
             analysis=analysis.get("comparisons", {}),
@@ -126,12 +126,12 @@ def main() -> int:
 
     if args.json:
         # Machine-readable summary first, printed before app.run() blocks.
-        print(json.dumps({"serving": True, "url": url}))
+        print(json.dumps({"serving": True, "url": url}), flush=True)
     else:
         print(f"Starting viewer at {url}")
         print(f"Video directory: {video_dir.absolute()}")
 
-    if not args.json and os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    if not args.json:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     app.run(host=args.host, port=args.port, debug=False)
     return 0
