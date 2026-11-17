@@ -1,6 +1,7 @@
 """Download orchestration: fetch video/image artifacts for a set of tasks."""
 
 import asyncio
+import json
 import sys
 import tarfile
 import zipfile
@@ -10,7 +11,14 @@ import aiohttp
 
 from .api import download_artifact, fetch_perfherder_data, list_task_artifacts
 from .models import VideoTask
-from .organize import _group_images_by_video
+from .organize import (
+    MEDIAN_IDX_FILE,
+    MEDIAN_IDX_STEPS_FILE,
+    _group_images_by_video,
+    _images_for_step,
+    _sorted,
+    group_videos_by_step,
+)
 from .selection import find_median_run_index
 
 
@@ -106,37 +114,51 @@ async def download_video_artifacts(
     async def _extract_tgz_media(
         tar_path: Path, extract_dir: Path, vt: VideoTask
     ) -> dict[str, list[Path]]:
-        """Extract a tgz, apply median selection for videos, return {videos, images}."""
+        """Extract a tgz, apply median selection per step, return {videos, images}."""
         extract_dir.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tar_path, "r:gz") as tar:
             _safe_extract_tar(tar, extract_dir)
+        tar_path.unlink()
 
-        mp4s = sorted(extract_dir.rglob("*.mp4"))
-        pngs = sorted(extract_dir.rglob("*.png"))
+        mp4s = _sorted(extract_dir.rglob("*.mp4"))
+        pngs = _sorted(extract_dir.rglob("*.png"))
+        if not mp4s:
+            return {"videos": [], "images": pngs}
 
         ph_data = await fetch_perfherder_data(session, vt.task_id, semaphore)
-        median_idx = find_median_run_index(ph_data) if ph_data else 0
-        median_idx = min(median_idx, len(mp4s) - 1) if mp4s else 0
+        steps = group_videos_by_step(mp4s)
 
-        image_groups = _group_images_by_video(mp4s, pngs)
+        medians: dict[str, int] = {}
+        keep_videos: list[Path] = []
+        keep_images: list[Path] = []
+        for label, step_videos in steps.items():
+            idx = find_median_run_index(ph_data, step=label or None) if ph_data else 0
+            idx = min(idx, len(step_videos) - 1)
+            medians[label] = idx
+            image_groups = _group_images_by_video(
+                step_videos, _images_for_step(label, step_videos, pngs)
+            )
+            if all_runs:
+                keep_videos.extend(step_videos)
+                keep_images.extend(img for grp in image_groups for img in grp)
+            else:
+                keep_videos.append(step_videos[idx])
+                if idx < len(image_groups):
+                    keep_images.extend(image_groups[idx])
 
         if all_runs:
-            videos = list(mp4s)
-            if mp4s:
-                (extract_dir / "median_idx.txt").write_text(str(median_idx))
+            if len(steps) == 1:
+                (extract_dir / MEDIAN_IDX_FILE).write_text(str(next(iter(medians.values()))))
+            else:
+                (extract_dir / MEDIAN_IDX_STEPS_FILE).write_text(json.dumps(medians))
+            keep_images = pngs
         else:
-            keep_images = set(image_groups[median_idx]) if median_idx < len(image_groups) else set()
-            for i, mp4 in enumerate(mp4s):
-                if i != median_idx:
-                    mp4.unlink()
-            for png in pngs:
-                if png not in keep_images:
-                    png.unlink()
-            videos = [mp4s[median_idx]] if mp4s else []
-            pngs = sorted(keep_images)
+            keep = set(keep_videos) | set(keep_images)
+            for path in mp4s + pngs:
+                if path not in keep:
+                    path.unlink()
 
-        tar_path.unlink()
-        return {"videos": videos, "images": pngs}
+        return {"videos": _sorted(keep_videos), "images": _sorted(keep_images)}
 
     async def download_task_videos(vt: VideoTask) -> dict[str, list[Path]]:
         task_dir = output_dir / vt.label / vt.platform / vt.test_name
@@ -215,8 +237,8 @@ async def download_video_artifacts(
                     archive_path.unlink()
                     progress()
                     return {
-                        "videos": sorted(extract_dir.rglob("*.mp4")),
-                        "images": sorted(extract_dir.rglob("*.png")),
+                        "videos": _sorted(extract_dir.rglob("*.mp4")),
+                        "images": _sorted(extract_dir.rglob("*.png")),
                     }
                 except Exception as e:
                     print(
@@ -236,7 +258,7 @@ async def download_video_artifacts(
                 if await download_artifact(session, vt.task_id, remote, local, semaphore):
                     images.append(local)
             progress()
-            return {"videos": sorted(videos), "images": sorted(images)}
+            return {"videos": _sorted(videos), "images": _sorted(images)}
 
         progress()
         return {"videos": [], "images": []}
