@@ -7,11 +7,25 @@ hang forever.
 """
 
 import asyncio
-from urllib.parse import parse_qs, urlparse
+import sys
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
 
 from .models import LANDO_API, TASKCLUSTER_INDEX, TASKCLUSTER_QUEUE
+from .selection import STUDENT_T, is_significant_result
+
+TREEHERDER_PERFCOMPARE_API = "https://treeherder.mozilla.org/api/perfcompare/results/"
+
+# Browsertime writes perfherder-data.json under test_info/; the bare path is
+# kept as a fallback for older tasks.
+PERFHERDER_DATA_ARTIFACTS = (
+    "public/test_info/perfherder-data.json",
+    "public/perfherder-data.json",
+)
+
+# Concurrency for per-task metadata lookups (index -> task -> taskGroupId).
+METADATA_CONCURRENCY = 16
 
 # (total, connect, sock_read) — generous enough for slow TC artifact listings
 # and large video downloads, but bounded so nothing hangs indefinitely.
@@ -84,62 +98,74 @@ async def resolve_lando_id(session: aiohttp.ClientSession, lando_id: str) -> str
         return commit_id
 
 
+def perfcompare_test_version(perfcompare_url: str, override: str | None = None) -> str:
+    """The statistical test to filter by: explicit override, else the URL's, else student-t."""
+    if override:
+        return override
+    params = parse_qs(urlparse(perfcompare_url).query)
+    return params.get("test_version", [STUDENT_T])[0] or STUDENT_T
+
+
 async def fetch_perfcompare_data_from_treeherder(
-    session: aiohttp.ClientSession, perfcompare_url: str
-) -> set[tuple[str, str]]:
+    session: aiohttp.ClientSession,
+    perfcompare_url: str,
+    test_version: str | None = None,
+) -> set[tuple[str, str]] | None:
     """
-    Fetch high-confidence tests from Treeherder for all video-producing frameworks.
+    Fetch significant (suite, platform) pairs from Treeherder for all video-producing frameworks.
 
     Always queries frameworks 13 (browsertime/raptor) and 15 (mozperftest) in
-    parallel, plus whatever framework is in the URL, so mixed perfcompare links
-    work without --all-tests.
-    """
-    parsed = urlparse(perfcompare_url)
-    params = parse_qs(parsed.query)
+    parallel so mixed perfcompare links work without --all-tests.
+    ``test_version`` overrides the URL's ``test_version`` (student-t or
+    mann-whitney-u); see `selection.is_significant_result` for what each
+    counts as significant.
 
-    base_rev = params.get("baseRev", [""])[0]
-    base_repo = params.get("baseRepo", ["mozilla-central"])[0]
-    new_rev = params.get("newRev", [""])[0]
-    new_repo = params.get("newRepo", ["mozilla-central"])[0]
-    test_version = params.get("test_version", ["student-t"])[0]
-    replicates = params.get("replicates", ["false"])[0]
+    Returns None if *every* framework request failed (so the caller can tell
+    "couldn't reach Treeherder" apart from "no significant changes"), else
+    the (possibly empty) set.
+    """
+    params = parse_qs(urlparse(perfcompare_url).query)
+    version = perfcompare_test_version(perfcompare_url, test_version)
+
+    base_params = {
+        "base_repository": params.get("baseRepo", ["mozilla-central"])[0],
+        "base_revision": params.get("baseRev", [""])[0],
+        "new_repository": params.get("newRepo", ["mozilla-central"])[0],
+        "new_revision": params.get("newRev", [""])[0],
+        "no_subtests": "true",
+        "replicates": params.get("replicates", ["false"])[0],
+        "test_version": version,
+    }
 
     # 13 = browsertime/raptor, 15 = mozperftest (Android startup) — the only two that produce videos
     frameworks = ["13", "15"]
 
-    api_url = "https://treeherder.mozilla.org/api/perfcompare/results/"
-    base_params = {
-        "base_repository": base_repo,
-        "base_revision": base_rev,
-        "new_repository": new_repo,
-        "new_revision": new_rev,
-        "no_subtests": "true",
-        "replicates": replicates,
-        "test_version": test_version,
-    }
-
-    async def _fetch_framework(fw: str) -> set[tuple[str, str]]:
-        qs = "&".join(f"{k}={v}" for k, v in {**base_params, "framework": fw}.items())
+    async def _fetch_framework(fw: str) -> set[tuple[str, str]] | None:
+        url = f"{TREEHERDER_PERFCOMPARE_API}?{urlencode({**base_params, 'framework': fw})}"
         try:
-            resp = await request_with_retry(session, "GET", f"{api_url}?{qs}")
+            resp = await request_with_retry(session, "GET", url)
             async with resp:
                 if resp.status != 200:
-                    return set()
+                    return None
                 results = await resp.json()
                 if not isinstance(results, list):
-                    return set()
+                    return None
                 return {
                     (r["suite"], r["platform"])
                     for r in results
-                    if r.get("confidence_text") == "High" and r.get("suite") and r.get("platform")
+                    if isinstance(r, dict)
+                    and r.get("suite")
+                    and r.get("platform")
+                    and is_significant_result(r, version)
                 }
         except Exception:
-            return set()
+            return None
 
-    print(f"  Calling Treeherder API (frameworks: {', '.join(frameworks)})...")
     results = await asyncio.gather(*[_fetch_framework(fw) for fw in frameworks])
-    high_conf_tests: set[tuple[str, str]] = set().union(*results)
-    return high_conf_tests
+    ok = [r for r in results if r is not None]
+    if not ok:
+        return None
+    return set().union(*ok)
 
 
 async def find_task_group_ids(
@@ -151,24 +177,29 @@ async def find_task_group_ids(
     We page through all indexed tasks and collect every unique group ID.
     """
     index_url = f"{TASKCLUSTER_INDEX}/tasks/gecko.v2.{repo}.revision.{revision}.taskgraph"
-    print(f"  Fetching task index for {revision[:12]}...")
 
-    data = await fetch_json(session, index_url)
-    indexed_tasks = data.get("tasks", [])
+    indexed_tasks: list[dict] = []
+    continuation_token = None
+    while True:
+        url = index_url + (f"?continuationToken={continuation_token}" if continuation_token else "")
+        data = await fetch_json(session, url)
+        indexed_tasks.extend(data.get("tasks", []))
+        continuation_token = data.get("continuationToken")
+        if not continuation_token:
+            break
     if not indexed_tasks:
-        raise Exception(f"No tasks found for revision {revision}")
+        raise Exception(f"No tasks found for revision {revision} in repo {repo}")
 
-    seen: set[str] = set()
-    group_ids: list[str] = []
-    for entry in indexed_tasks:
-        task_id = entry["taskId"]
-        task_data = await fetch_json(session, f"{TASKCLUSTER_QUEUE}/task/{task_id}")
-        gid = task_data["taskGroupId"]
-        if gid not in seen:
-            seen.add(gid)
-            group_ids.append(gid)
+    semaphore = asyncio.Semaphore(METADATA_CONCURRENCY)
 
-    return group_ids
+    async def _group_of(task_id: str) -> str:
+        async with semaphore:
+            task_data = await fetch_json(session, f"{TASKCLUSTER_QUEUE}/task/{task_id}")
+            return task_data["taskGroupId"]
+
+    gids = await asyncio.gather(*[_group_of(entry["taskId"]) for entry in indexed_tasks])
+    # dict preserves first-seen order while deduplicating
+    return list(dict.fromkeys(gids))
 
 
 async def _get_tasks_in_group(session: aiohttp.ClientSession, task_group_id: str) -> list:
@@ -234,7 +265,7 @@ async def download_artifact(
 
                 return True
         except Exception as e:
-            print(f"    Error downloading {artifact_name}: {e}")
+            print(f"    Error downloading {artifact_name}: {e}", file=sys.stderr)
             return False
 
 
@@ -243,17 +274,21 @@ async def fetch_perfherder_data(
     task_id: str,
     semaphore: asyncio.Semaphore,
 ) -> dict | None:
-    """Download perfherder-data.json artifact for a task."""
-    url = f"{TASKCLUSTER_QUEUE}/task/{task_id}/artifacts/public/perfherder-data.json"
+    """Download a task's perfherder-data.json (None if unavailable)."""
     async with semaphore:
-        try:
-            resp = await request_with_retry(session, "GET", url)
-            async with resp:
-                if resp.status != 200:
-                    return None
-                return await resp.json(content_type=None)
-        except Exception:
-            return None
+        for artifact in PERFHERDER_DATA_ARTIFACTS:
+            url = f"{TASKCLUSTER_QUEUE}/task/{task_id}/artifacts/{artifact}"
+            try:
+                resp = await request_with_retry(session, "GET", url)
+                async with resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        return data
+            except Exception:
+                continue
+        return None
 
 
 async def list_task_artifacts(
