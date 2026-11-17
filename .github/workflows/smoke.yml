@@ -1,0 +1,35 @@
+name: Live smoke test
+
+# Downloads one real autoland test and runs perf-sxs-analyze prepare on it, to
+# catch changes in the Taskcluster/Treeherder data the code relies on (see
+# docs/internals.md). Not run on PRs: it depends on external services.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
+      - name: Smoke test
+        run: uv run python scripts/smoke.py

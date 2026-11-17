@@ -59,5 +59,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
       - name: Run tests
         run: uv run pytest tests/ -v
