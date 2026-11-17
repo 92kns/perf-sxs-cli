@@ -304,8 +304,11 @@
     <header>
         <h1>Perf Side-by-Side Viewer</h1>
         <div class="revision-info">
+            {% if cross_browser %}
+            <div>Cross-browser: <span>{{ cross_browser.base_app }}</span> vs <span>{{ cross_browser.new_app }}</span></div>
+            {% endif %}
             <div>Base: <span id="base-rev">{{ base_revision[:12] if base_revision else 'N/A' }}</span></div>
-            {% if mode != 'single' %}
+            {% if mode != 'single' and not (cross_browser and new_revision == base_revision) %}
             <div>New: <span id="new-rev">{{ new_revision[:12] if new_revision else 'N/A' }}</span></div>
             {% endif %}
         </div>
@@ -321,6 +324,16 @@
                 <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
                     <input type="checkbox" id="auto-play-toggle" onchange="toggleAutoPlay(this.checked)" checked>
                     Auto-play on select
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; margin-top: 0.35rem;">
+                    <input type="checkbox" id="loop-toggle" onchange="toggleLoop(this.checked)">
+                    Loop videos
+                </label>
+                <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; margin-top: 0.35rem;">
+                    Speed:
+                    <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="1"
+                           oninput="setSpeed(this.value)" style="flex: 1;">
+                    <span id="speed-label">1x</span>
                 </label>
             </div>
             {% set platforms = {} %}
@@ -339,7 +352,7 @@
                 <div class="test-list">
                     {% for key, comp in platforms[platform] %}
                     <div class="test-item" data-key="{{ key }}" onclick="selectTest('{{ key }}')">
-                        <div class="name">{{ comp.test_name }}{% if comp.same_task_warning %} <span title="Base and new use the same task — comparison may not be meaningful" style="color:#f0a500;font-size:0.75rem">⚠</span>{% endif %}</div>
+                        <div class="name">{{ comp.test_name }}{% if comp.step %} <span style="color:#888">› {{ comp.step }}</span>{% endif %}{% if comp.same_task_warning %} <span title="Base and new use the same task — comparison may not be meaningful" style="color:#f0a500;font-size:0.75rem">⚠</span>{% endif %}</div>
                     </div>
                     {% endfor %}
                 </div>
@@ -351,7 +364,7 @@
             {% if not comparisons %}
             <div class="empty-state">
                 <h2>No comparisons available</h2>
-                <p>Download videos first using perf_sxs.py</p>
+                <p>Download videos first using perf-sxs</p>
             </div>
             {% else %}
             <div class="empty-state" id="placeholder">
@@ -369,12 +382,7 @@
                     <button onclick="playBoth('{{ key }}')" id="play-btn-{{ key|replace('/', '-') }}">Play Both</button>
                     <button onclick="pauseBoth('{{ key }}')">Pause</button>
                     <button onclick="restartBoth('{{ key }}')">Restart</button>
-                    <label>
-                        Speed:
-                        <input type="range" min="0.25" max="2" step="0.25" value="1"
-                               onchange="setSpeed('{{ key }}', this.value)">
-                        <span id="speed-{{ key|replace('/', '-') }}">1x</span>
-                    </label>
+                    <button class="loop-btn" onclick="toggleLoop(!loopEnabled)" title="Loop both videos (applies to every test)">Loop: off</button>
                     <label>
                         <input type="checkbox" onchange="toggleSync('{{ key }}', this.checked)" checked>
                         Sync playback
@@ -397,14 +405,14 @@
                 {% if comp.base_videos %}
                 <div class="video-container" style="{{ 'grid-template-columns: 1fr;' if mode == 'single' else '' }}">
                     <div class="video-panel base">
-                        <h3>{{ base_revision[:12] if base_revision else 'N/A' }}</h3>
+                        <h3>{% if cross_browser %}{{ cross_browser.base_app }} · {% endif %}{{ base_revision[:12] if base_revision else 'N/A' }}</h3>
                         <video id="base-{{ key|replace('/', '-') }}"
                                src="/video/{{ comp.base_videos[comp.base_median_idx or 0]|urlencode }}"
                                muted></video>
                     </div>
                     {% if mode != 'single' and comp.new_videos %}
                     <div class="video-panel new">
-                        <h3>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h3>
+                        <h3>{% if cross_browser %}{{ cross_browser.new_app }} · {{ new_revision[:12] if new_revision else 'N/A' }}{% else %}New ({{ new_revision[:12] if new_revision else 'N/A' }}){% endif %}</h3>
                         <video id="new-{{ key|replace('/', '-') }}"
                                src="/video/{{ comp.new_videos[comp.new_median_idx or 0]|urlencode }}"
                                muted></video>
@@ -423,7 +431,7 @@
                     </div>
                     <div class="images-body">
                         <div class="image-panel base" id="base-images-{{ key|replace('/', '-') }}">
-                            <h4>{{ base_revision[:12] if base_revision else 'N/A' }}</h4>
+                            <h4>{% if cross_browser %}{{ cross_browser.base_app }} · {% endif %}{{ base_revision[:12] if base_revision else 'N/A' }}</h4>
                             {% for run_imgs in comp.base_images %}
                             <div class="run-images image-gallery"
                                  data-run="{{ loop.index0 }}"
@@ -438,7 +446,7 @@
                         </div>
                         {% if mode != 'single' and comp.new_images %}
                         <div class="image-panel new" id="new-images-{{ key|replace('/', '-') }}">
-                            <h4>New ({{ new_revision[:12] if new_revision else 'N/A' }})</h4>
+                            <h4>{% if cross_browser %}{{ cross_browser.new_app }} · {{ new_revision[:12] if new_revision else 'N/A' }}{% else %}New ({{ new_revision[:12] if new_revision else 'N/A' }}){% endif %}</h4>
                             {% set new_default = comp.new_median_idx or 0 %}
                             {% for run_imgs in comp.new_images %}
                             <div class="run-images image-gallery"
@@ -495,10 +503,65 @@
         const mode = {{ mode|tojson }};
         let syncEnabled = {};
         let currentTest = null;
-        let autoPlayEnabled = true;
+
+        // Playback preferences are global (shared by every test) and persist
+        // across selections and page reloads via localStorage.
+        const PREFS_KEY = 'perf-sxs-viewer-prefs';
+        const prefs = (() => {
+            try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; }
+        })();
+        let autoPlayEnabled = prefs.autoPlay ?? true;
+        let loopEnabled = prefs.loop ?? false;
+        let playbackSpeed = Number(prefs.speed) || 1;
+
+        function savePrefs() {
+            try {
+                localStorage.setItem(PREFS_KEY, JSON.stringify({
+                    autoPlay: autoPlayEnabled, loop: loopEnabled, speed: playbackSpeed,
+                }));
+            } catch { /* storage unavailable (private mode etc.) — prefs just won't persist */ }
+        }
+
+        // Jinja's replace() swaps every '/', so the JS side must too.
+        function safeId(key) {
+            return key.replaceAll('/', '-');
+        }
+
+        function videosFor(key) {
+            const safeKey = safeId(key);
+            return [document.getElementById(`base-${safeKey}`), document.getElementById(`new-${safeKey}`)]
+                .filter(Boolean);
+        }
+
+        // Setting a <video>'s src resets playbackRate to defaultPlaybackRate,
+        // so set both whenever prefs are (re)applied.
+        function applyPlaybackPrefs(key) {
+            if (!key) return;
+            videosFor(key).forEach(v => {
+                v.defaultPlaybackRate = playbackSpeed;
+                v.playbackRate = playbackSpeed;
+                v.loop = loopEnabled;
+            });
+        }
+
+        function syncPrefControls() {
+            document.getElementById('auto-play-toggle').checked = autoPlayEnabled;
+            document.getElementById('loop-toggle').checked = loopEnabled;
+            document.getElementById('speed-slider').value = playbackSpeed;
+            document.getElementById('speed-label').textContent = playbackSpeed + 'x';
+            document.querySelectorAll('.loop-btn').forEach(btn => {
+                btn.textContent = `Loop: ${loopEnabled ? 'on' : 'off'}`;
+                btn.classList.toggle('active', loopEnabled);
+            });
+        }
 
         function selectTest(key) {
-            const safeKey = key.replace('/', '-');
+            const safeKey = safeId(key);
+
+            // Don't leave the previous test playing in a hidden panel
+            if (currentTest && currentTest !== key) {
+                videosFor(currentTest).forEach(v => v.pause());
+            }
 
             // Update sidebar
             document.querySelectorAll('.test-item').forEach(el => el.classList.remove('active'));
@@ -510,6 +573,7 @@
             document.getElementById(`view-${safeKey}`).classList.add('active');
 
             currentTest = key;
+            applyPlaybackPrefs(key);
 
             // Auto-expand images panel and sync to default run
             const imagesPanel = document.getElementById(`images-${safeKey}`);
@@ -533,7 +597,7 @@
         }
 
         function playBoth(key) {
-            const safeKey = key.replace('/', '-');
+            const safeKey = safeId(key);
             const baseVideo = document.getElementById(`base-${safeKey}`);
             const newVideo = document.getElementById(`new-${safeKey}`);
 
@@ -548,13 +612,13 @@
         }
 
         function pauseBoth(key) {
-            const safeKey = key.replace('/', '-');
+            const safeKey = safeId(key);
             document.getElementById(`base-${safeKey}`).pause();
             document.getElementById(`new-${safeKey}`)?.pause();
         }
 
         function restartBoth(key) {
-            const safeKey = key.replace('/', '-');
+            const safeKey = safeId(key);
             const baseVideo = document.getElementById(`base-${safeKey}`);
             const newVideo = document.getElementById(`new-${safeKey}`);
 
@@ -563,12 +627,18 @@
             if (newVideo) { newVideo.currentTime = 0; newVideo.play(); }
         }
 
-        function setSpeed(key, speed) {
-            const safeKey = key.replace('/', '-');
-            document.getElementById(`base-${safeKey}`).playbackRate = speed;
-            const newVideo = document.getElementById(`new-${safeKey}`);
-            if (newVideo) newVideo.playbackRate = speed;
-            document.getElementById(`speed-${safeKey}`).textContent = speed + 'x';
+        function setSpeed(speed) {
+            playbackSpeed = Number(speed) || 1;
+            savePrefs();
+            syncPrefControls();
+            applyPlaybackPrefs(currentTest);
+        }
+
+        function toggleLoop(enabled) {
+            loopEnabled = enabled;
+            savePrefs();
+            syncPrefControls();
+            applyPlaybackPrefs(currentTest);
         }
 
         function toggleSync(key, enabled) {
@@ -576,7 +646,7 @@
         }
 
         function selectRun(key, index) {
-            const safeKey = key.replace('/', '-');
+            const safeKey = safeId(key);
             const comp = comparisons[key];
 
             const baseVideo = document.getElementById(`base-${safeKey}`);
@@ -587,6 +657,7 @@
             if (newVideo && comp.new_videos && comp.new_videos[index]) {
                 newVideo.src = '/video/' + encodeURIComponent(comp.new_videos[index]);
             }
+            applyPlaybackPrefs(key);
 
             if (autoPlayEnabled) {
                 setTimeout(() => playBoth(key), 100);
@@ -609,15 +680,16 @@
 
         function toggleAutoPlay(enabled) {
             autoPlayEnabled = enabled;
+            savePrefs();
         }
 
         function toggleAnalysis(key) {
-            const panel = document.getElementById(`analysis-${key.replace('/', '-')}`);
+            const panel = document.getElementById(`analysis-${safeId(key)}`);
             if (panel) panel.classList.toggle('analysis-collapsed');
         }
 
         function toggleImages(key) {
-            const panel = document.getElementById(`images-${key.replace('/', '-')}`);
+            const panel = document.getElementById(`images-${safeId(key)}`);
             if (panel) panel.classList.toggle('images-collapsed');
         }
 
@@ -664,6 +736,8 @@
                 ? `${visible}/{{ comparisons|length }}`
                 : '{{ comparisons|length }}';
         }
+
+        syncPrefControls();
 
         // Select first test by default
         const firstKey = Object.keys(comparisons)[0];
